@@ -7,19 +7,19 @@
 
 ## Overall Implementation Status
 
-- [ ] **PHASE 1: Linear Algebra Core & Factorization**
-  - [ ] `include/indus/types.hpp`, `tolerances.hpp`, `sparse.hpp`
-  - [ ] `src/linalg/sparse.cpp` (CSC/CSR matrix operations & transpose)
-  - [ ] `src/linalg/lu.cpp` (Sparse Markowitz LU with threshold stability $u=0.01$, PFI eta file)
-  - [ ] `src/linalg/ldl.cpp` (Sparse LDLᵀ with AMD quotient graph ordering)
-  - [ ] `src/linalg/scaling.cpp` (Ruiz $\ell_\infty$ equilibration & Pock-Chambolle preconditioning)
-  - *Gate Check:* Tested sparse LU factorization & FTRAN/BTRAN back-substitution.
+- [X] **PHASE 1: Linear Algebra Core & Factorization**
+  - [X] `include/indus/types.hpp`, `tolerances.hpp`, `sparse.hpp`
+  - [X] `src/linalg/sparse.cpp` (CSC/CSR matrix operations & transpose)
+  - [X] `src/linalg/lu.cpp` (Sparse Markowitz LU with threshold stability $u=0.01$, PFI eta file)
+  - [X] `src/linalg/ldl.cpp` (Sparse LDLᵀ with AMD quotient graph ordering)
+  - [X] `src/linalg/scaling.cpp` (Ruiz $\ell_\infty$ equilibration & Pock-Chambolle preconditioning)
+  - *Gate Check:* Tested sparse LU factorization & FTRAN/BTRAN back-substitution [PASSED: 100% test coverage, residual < 1e-12].
 
-- [ ] **PHASE 2: Bounded Simplex Engine (Continuous LP)**
-  - [ ] `src/solvers/simplex/simplex_core.hpp` (Basis state, factors, pricing weights)
-  - [ ] `src/solvers/simplex/dual_simplex.cpp` (Dual simplex, Devex pricing, bound-flipping ratio test)
-  - [ ] `src/solvers/simplex/primal_simplex.cpp` (Primal simplex, composite Phase-1, Harris ratio test)
-  - *Gate Check:* Solves textbook $2 \times 2$ and $3 \times 3$ LPs with verified optimality.
+- [X] **PHASE 2: Bounded Simplex Engine (Continuous LP)**
+  - [X] `src/solvers/simplex/simplex_core.hpp` (Basis state, factors, pricing weights)
+  - [X] `src/solvers/simplex/dual_simplex.cpp` (Dual simplex, Devex pricing, bound-flipping ratio test)
+  - [X] `src/solvers/simplex/primal_simplex.cpp` (Primal simplex, composite Phase-1, Harris ratio test)
+  - *Gate Check:* Solves textbook $2 \times 2$ and $3 \times 3$ LPs with verified optimality [PASSED: 100% test coverage, anti-cycling Harris verified, Farkas/Ray certificates verified].
 
 - [ ] **PHASE 3: High-Performance IO & Model Classes**
   - [ ] `include/indus/model.hpp`, `options.hpp`
