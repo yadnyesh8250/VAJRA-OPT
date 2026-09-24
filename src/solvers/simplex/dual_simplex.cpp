@@ -206,35 +206,11 @@ SimplexResult SimplexCore::solve(int64_t max_iterations) {
     compute_dual_values();
     compute_reduced_costs();
 
-    // Check if initial point is primal feasible
-    bool primal_feas = true;
-    for (int j = 0; j < model_.num_vars; ++j) {
-        const double x = basis_.primal[static_cast<size_t>(j)];
-        const double l = model_.lower[static_cast<size_t>(j)];
-        const double u = model_.upper[static_cast<size_t>(j)];
-        if (x < l - tol::kPrimalFeasibility || x > u + tol::kPrimalFeasibility) {
-            primal_feas = false;
-            break;
-        }
+    SimplexResult res = solve_dual(max_iterations);
+    if (res.status == SolveStatus::kOptimal || res.status == SolveStatus::kInfeasible || res.status == SolveStatus::kUnbounded) {
+        return res;
     }
-
-    // Check if initial point is dual feasible
-    bool dual_feas = true;
-    for (int j = 0; j < model_.num_vars; ++j) {
-        if (basis_.basic_index[static_cast<size_t>(j)] == -1) {
-            const double dj = basis_.reduced_cost[static_cast<size_t>(j)];
-            const auto st = basis_.status[static_cast<size_t>(j)];
-            if (st == BasisStatus::kAtLower && dj < -tol::kDualFeasibility) { dual_feas = false; break; }
-            if (st == BasisStatus::kAtUpper && dj > tol::kDualFeasibility) { dual_feas = false; break; }
-            if (st == BasisStatus::kNonbasicFree && std::abs(dj) > tol::kDualFeasibility) { dual_feas = false; break; }
-        }
-    }
-
-    if (primal_feas && !dual_feas) {
-        return solve_primal(max_iterations);
-    } else {
-        return solve_dual(max_iterations);
-    }
+    return solve_primal(max_iterations);
 }
 
 SimplexResult SimplexCore::solve_dual(int64_t max_iterations) {

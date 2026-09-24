@@ -11,11 +11,14 @@ SimplexResult SimplexCore::solve_primal(int64_t max_iterations) {
     const int n = model_.num_cols;
     const int num_vars = model_.num_vars;
 
-    init_slack_basis();
-    if (!refactorize_basis()) {
-        result.status = SolveStatus::kNumericalError;
-        result.status_message = "Initial basis factorization failed";
-        return result;
+    // Initialize slack basis only if basis is not already set up
+    if (basis_.m != m || basis_.basic_vars.empty() || basis_.basic_vars[0] == -1) {
+        init_slack_basis();
+        if (!refactorize_basis()) {
+            result.status = SolveStatus::kNumericalError;
+            result.status_message = "Initial basis factorization failed";
+            return result;
+        }
     }
 
     compute_primal_values();
@@ -139,12 +142,22 @@ SimplexResult SimplexCore::solve_primal(int64_t max_iterations) {
                 const double u = model_.upper[static_cast<size_t>(var)];
                 const double a = alpha[static_cast<size_t>(i)] * enter_dir;
 
-                if (a > tol::kZeroDrop && l > -1e20) {
-                    const double step = (x - l + tol::kPrimalFeasibility) / a;
-                    if (step < theta_max) theta_max = step;
-                } else if (a < -tol::kZeroDrop && u < 1e20) {
-                    const double step = (u - x + tol::kPrimalFeasibility) / (-a);
-                    if (step < theta_max) theta_max = step;
+                if (a > tol::kZeroDrop) {
+                    if (x >= l - tol::kPrimalFeasibility && l > -1e20) {
+                        const double step = (x - l + tol::kPrimalFeasibility) / a;
+                        if (step < theta_max) theta_max = step;
+                    } else if (x > u + tol::kPrimalFeasibility) {
+                        const double step = (x - u + tol::kPrimalFeasibility) / a;
+                        if (step < theta_max) theta_max = step;
+                    }
+                } else if (a < -tol::kZeroDrop) {
+                    if (x <= u + tol::kPrimalFeasibility && u < 1e20) {
+                        const double step = (u - x + tol::kPrimalFeasibility) / (-a);
+                        if (step < theta_max) theta_max = step;
+                    } else if (x < l - tol::kPrimalFeasibility) {
+                        const double step = (l - x + tol::kPrimalFeasibility) / (-a);
+                        if (step < theta_max) theta_max = step;
+                    }
                 }
             }
 
@@ -160,23 +173,26 @@ SimplexResult SimplexCore::solve_primal(int64_t max_iterations) {
                 const double u = model_.upper[static_cast<size_t>(var)];
                 const double a = alpha[static_cast<size_t>(i)] * enter_dir;
 
-                if (a > tol::kZeroDrop && l > -1e20) {
-                    const double step = (x - l) / a;
-                    if (step <= theta_max) {
-                        if (std::abs(a) > max_pivot) {
-                            max_pivot = std::abs(a);
-                            leave_row = i;
-                            actual_step = std::max(0.0, step);
-                        }
+                double step = 1e20;
+                if (a > tol::kZeroDrop) {
+                    if (x >= l - tol::kPrimalFeasibility && l > -1e20) {
+                        step = std::max(0.0, (x - l) / a);
+                    } else if (x > u + tol::kPrimalFeasibility) {
+                        step = std::max(0.0, (x - u) / a);
                     }
-                } else if (a < -tol::kZeroDrop && u < 1e20) {
-                    const double step = (u - x) / (-a);
-                    if (step <= theta_max) {
-                        if (std::abs(a) > max_pivot) {
-                            max_pivot = std::abs(a);
-                            leave_row = i;
-                            actual_step = std::max(0.0, step);
-                        }
+                } else if (a < -tol::kZeroDrop) {
+                    if (x <= u + tol::kPrimalFeasibility && u < 1e20) {
+                        step = std::max(0.0, (u - x) / (-a));
+                    } else if (x < l - tol::kPrimalFeasibility) {
+                        step = std::max(0.0, (l - x) / (-a));
+                    }
+                }
+
+                if (step <= theta_max && std::abs(a) > tol::kZeroDrop) {
+                    if (std::abs(a) > max_pivot) {
+                        max_pivot = std::abs(a);
+                        leave_row = i;
+                        actual_step = step;
                     }
                 }
             }
@@ -236,6 +252,7 @@ SimplexResult SimplexCore::solve_primal(int64_t max_iterations) {
     // Phase 2: Primal Simplex Optimization
     // ========================================================================
     int64_t p2_iter = 0;
+    int64_t consecutive_degenerate = 0;
     while (total_iterations < max_iterations) {
         p2_iter++;
         total_iterations++;
@@ -255,23 +272,35 @@ SimplexResult SimplexCore::solve_primal(int64_t max_iterations) {
             const double dj = basis_.reduced_cost[static_cast<size_t>(j)];
             const auto st = basis_.status[static_cast<size_t>(j)];
 
-            if (st == BasisStatus::kAtLower && dj < -tol::kDualFeasibility) {
-                if (dj < best_dj) {
-                    best_dj = dj;
-                    enter_var = j;
-                    enter_dir = 1.0;
+            if (consecutive_degenerate >= 5) {
+                // Bland's rule: first variable violating optimality condition
+                if (st == BasisStatus::kAtLower && dj < -tol::kDualFeasibility) {
+                    enter_var = j; enter_dir = 1.0; break;
+                } else if (st == BasisStatus::kAtUpper && dj > tol::kDualFeasibility) {
+                    enter_var = j; enter_dir = -1.0; break;
+                } else if (st == BasisStatus::kNonbasicFree && std::abs(dj) > tol::kDualFeasibility) {
+                    enter_var = j; enter_dir = (dj < 0.0) ? 1.0 : -1.0; break;
                 }
-            } else if (st == BasisStatus::kAtUpper && dj > tol::kDualFeasibility) {
-                if (-dj < best_dj) {
-                    best_dj = -dj;
-                    enter_var = j;
-                    enter_dir = -1.0;
-                }
-            } else if (st == BasisStatus::kNonbasicFree && std::abs(dj) > tol::kDualFeasibility) {
-                if (-std::abs(dj) < best_dj) {
-                    best_dj = -std::abs(dj);
-                    enter_var = j;
-                    enter_dir = (dj < 0.0) ? 1.0 : -1.0;
+            } else {
+                // Dantzig's rule
+                if (st == BasisStatus::kAtLower && dj < -tol::kDualFeasibility) {
+                    if (dj < best_dj) {
+                        best_dj = dj;
+                        enter_var = j;
+                        enter_dir = 1.0;
+                    }
+                } else if (st == BasisStatus::kAtUpper && dj > tol::kDualFeasibility) {
+                    if (-dj < best_dj) {
+                        best_dj = -dj;
+                        enter_var = j;
+                        enter_dir = -1.0;
+                    }
+                } else if (st == BasisStatus::kNonbasicFree && std::abs(dj) > tol::kDualFeasibility) {
+                    if (-std::abs(dj) < best_dj) {
+                        best_dj = -std::abs(dj);
+                        enter_var = j;
+                        enter_dir = (dj < 0.0) ? 1.0 : -1.0;
+                    }
                 }
             }
         }
@@ -306,10 +335,10 @@ SimplexResult SimplexCore::solve_primal(int64_t max_iterations) {
             const double a = alpha[static_cast<size_t>(i)] * enter_dir;
 
             if (a > tol::kZeroDrop && l > -1e20) {
-                const double step = (x - l + tol::kPrimalFeasibility) / a;
+                const double step = std::max(0.0, (x - l + tol::kPrimalFeasibility) / a);
                 if (step < theta_max) theta_max = step;
             } else if (a < -tol::kZeroDrop && u < 1e20) {
-                const double step = (u - x + tol::kPrimalFeasibility) / (-a);
+                const double step = std::max(0.0, (u - x + tol::kPrimalFeasibility) / (-a));
                 if (step < theta_max) theta_max = step;
             }
         }
@@ -335,6 +364,7 @@ SimplexResult SimplexCore::solve_primal(int64_t max_iterations) {
         // Pass 2
         int leave_row = -1;
         double max_pivot = 0.0;
+        int min_leave_var = 1e9;
         double actual_step = theta_max;
 
         for (int i = 0; i < m; ++i) {
@@ -344,22 +374,26 @@ SimplexResult SimplexCore::solve_primal(int64_t max_iterations) {
             const double u = model_.upper[static_cast<size_t>(var)];
             const double a = alpha[static_cast<size_t>(i)] * enter_dir;
 
+            double step = 1e20;
             if (a > tol::kZeroDrop && l > -1e20) {
-                const double step = (x - l) / a;
-                if (step <= theta_max) {
-                    if (std::abs(a) > max_pivot) {
-                        max_pivot = std::abs(a);
-                        leave_row = i;
-                        actual_step = std::max(0.0, step);
-                    }
-                }
+                step = std::max(0.0, (x - l) / a);
             } else if (a < -tol::kZeroDrop && u < 1e20) {
-                const double step = (u - x) / (-a);
-                if (step <= theta_max) {
+                step = std::max(0.0, (u - x) / (-a));
+            }
+
+            if (step <= theta_max && std::abs(a) > tol::kZeroDrop) {
+                if (consecutive_degenerate >= 5) {
+                    // Bland's rule: smallest variable index
+                    if (var < min_leave_var) {
+                        min_leave_var = var;
+                        leave_row = i;
+                        actual_step = step;
+                    }
+                } else {
                     if (std::abs(a) > max_pivot) {
                         max_pivot = std::abs(a);
                         leave_row = i;
-                        actual_step = std::max(0.0, step);
+                        actual_step = step;
                     }
                 }
             }
@@ -397,6 +431,12 @@ SimplexResult SimplexCore::solve_primal(int64_t max_iterations) {
         basis_.basic_vars[static_cast<size_t>(leave_row)] = enter_var;
         basis_.basic_index[static_cast<size_t>(enter_var)] = leave_row;
         basis_.basic_index[static_cast<size_t>(leave_var)] = -1;
+
+        if (actual_step <= 1e-7) {
+            consecutive_degenerate++;
+        } else {
+            consecutive_degenerate = 0;
+        }
 
         bool pfi_ok = lu_.update_basis_pfi(leave_row, alpha);
         if (!pfi_ok || lu_.needs_refactorization() || (p2_iter % 50 == 0)) {

@@ -4,3 +4,12 @@ build/
 *.dylib
 *.so
 .DS_Store
+
+# Generated benchmarks and test artifacts
+artifacts/
+benchmark_artifacts/
+benchmark_results.csv
+tmp/
+*.sol
+*.json
+!SOVEREIGN_SOLVER_BLUEPRINT/**

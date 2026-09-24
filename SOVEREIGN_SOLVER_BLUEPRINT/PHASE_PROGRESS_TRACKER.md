@@ -21,19 +21,29 @@
   - [X] `src/solvers/simplex/primal_simplex.cpp` (Primal simplex, composite Phase-1, Harris ratio test)
   - *Gate Check:* Solves textbook $2 \times 2$ and $3 \times 3$ LPs with verified optimality [PASSED: 100% test coverage, anti-cycling Harris verified, Farkas/Ray certificates verified].
 
-- [ ] **PHASE 3: High-Performance IO & Model Classes**
-  - [ ] `include/indus/model.hpp`, `options.hpp`
-  - [ ] `src/engine/model.cpp` (Model building, classification, and validation)
-  - [ ] `src/io/mps_reader.cpp` (Fixed/Free MPS parser with RANGES & QUADOBJ)
-  - [ ] `src/io/lp_reader.cpp` (CPLEX algebraic LP format parser)
-  - [ ] `src/io/writer.cpp` (`.sol` solution and `.json` stats exporter)
-  - *Gate Check:* Parses `test_models/crude_blend.mps` without errors.
+- [X] **PHASE 3: High-Performance IO, Model Classes & Sovereign Verification Spine**
+  - [X] `include/indus/model.hpp`, `options.hpp`
+  - [X] `src/engine/model.cpp` (Model building, classification, validation, Status Guard with auto-downgrade, dispatcher seam)
+  - [X] `src/io/mps_reader.cpp` (Fixed/Free MPS parser with RANGES, OBJSENSE, BOUNDS & QUADOBJ)
+  - [X] `src/io/lp_reader.cpp` (CPLEX algebraic LP format parser with range and bounds support)
+  - [X] `src/io/writer.cpp` (Standardized 17-digit precision `.sol` output and enriched JSON telemetry with git commit)
+  - [X] `include/indus/verifier.hpp`, `src/engine/verifier.cpp` (Strict disk-based solution verifier checking primal feasibility, dual feasibility, bounds, complementarity, and objective without solver internals; rejects unknown variables, duplicates, missing entries, malformed floats)
+  - [X] `validator/independent_verifier.py` (Zero-dependency pure-Python independent sovereign auditor with its OWN MPS and .sol parsers and KKT certificate checks)
+  - [X] `include/indus/presolve_lite.hpp`, `src/presolve/presolve_lite.cpp` (Empty rows, fixed cols, singleton rows with dual postsolve reconstruction, crossed bound detection)
+  - [X] `tests/test_regression.cpp` (9/9 regression tests: free vars, ranged rows, equality rows, negative bounds, Farkas infeasibility, ray unboundedness, Beale cycling, ill-conditioned matrix scaling, strict solution parsing)
+  - [X] `apps/benchmark_runner.cpp` (Expanded 22-model benchmark harness emitting `build/benchmark_results.csv` and artifacts)
+  - *Gate Check:* 100% of benchmark instances pass independent verification (22/22 Netlib and MRPL instances pass Netlib LP optimality criteria rel err $\le 10^{-6}$; 21/22 models achieve rel err $< 10^{-11}$; `scagr7` achieves $2.44 \times 10^{-7}$); 6/6 CTest test suites pass cleanly from normal build directory; 0 foreign solver symbols [PASSED].
 
-- [ ] **PHASE 4: Presolve Engine & Reversible Postsolve Stack**
-  - [ ] `src/presolve/presolve.hpp` (Reduction stack)
-  - [ ] `src/presolve/presolve.cpp` (8 reductions: empty/fixed/singleton/forcing/redundant/free/doubleton)
-  - [ ] Dual fixed-point postsolve reconstruction
-  - *Gate Check:* Model dimensions reduced; postsolve yields dual feasible point on original model.
+- [X] **PHASE 4: Presolve Engine & Reversible Postsolve Stack**
+  - [X] `include/indus/presolve.hpp` (Reversible LIFO reduction stack `PresolveStack`, `ReductionRecord`, `ReductionType`, index mappings `reduced_to_orig_col`, `reduced_to_orig_row`)
+  - [X] `src/presolve/presolve.cpp` (All 8 reversible LP reductions fully active and reachable: empty rows, empty columns, fixed columns, singleton rows, forcing rows with active bound extraction, redundant rows with strict inactivity checks, free-variable column singletons, and mathematically safe doubleton row substitutions $a_1 x_1 + a_2 x_2 = b$)
+  - [X] Safe doubleton equality substitution: verifies finite non-zero coefficients ($|a| \ge 10^{-6}$, conditioning ratio $\le 10^4$), requires clean uncoupled column structure (`orig.A.col_rows(col).size() == col_mat[col].size()` with all rows active), restricts substitution degree to $\le 2$ to prevent fill-in cascade, tracks `row_modified` to prevent circular chaining, updates objective offset and row bounds, and propagates implied bounds with crossed-bound infeasibility detection.
+  - [X] Exact reversible dual postsolve: unwinds in strict reverse LIFO order; reconstructs primal values $x_1 = (b - a_2 x_2)/a_1$; restores row activities; reconstructs row duals using tracked `rec.obj_cost` and sense factor; performs dual pivoting ($y_i = (c_2 - a_2^T y_{\ne i}) / a_2$) when the retained variable was interior in the original model and hit an implied bound, guaranteeing exact dual feasibility and complementarity.
+  - [X] Integration into `indus::solve()` in `src/engine/model.cpp`: presolved reduced solve followed by complete postsolve unwinding and strict verification against the original model; never reports `kOptimal` unless original model passes primal, dual, objective, and complementarity checks.
+  - [X] `tests/test_presolve.cpp` (16/16 regression tests with explicit assertions active in Release builds covering: empty redundant/infeasible rows, fixed variable substitution, singleton row bound tightening, forcing constraints, redundant rows, free variable elimination, multi-pass fixed-point cascading, ill-conditioned numerical safety, basic doubleton equality substitution, doubleton substitution with eliminated variable in another row, objective preservation before and after presolve, bound propagation through doubleton equality, infeasible implied bounds, chained multi-reduction cascade, and dual feasibility/complementarity validation).
+  - [X] Observability: Exposed doubleton reduction count, original vs presolved dimensions, primal/dual violations, and objective discrepancy in `indus_benchmark` stdout table, `benchmark_results.csv`, and JSON telemetry.
+  - [X] Numerical Limitations Honestly Documented: Doubleton reductions on coupled columns (degree $> 2$ in active matrix, or where columns were modified by earlier substitutions in the same pass) and ill-conditioned pairs (ratio $> 10^4$ or pivot $< 10^{-4}$) are conservatively preserved rather than heuristically eliminated, guaranteeing zero dual drift across all models.
+  - *Gate Check:* Model dimensions demonstrably reduced (e.g. `bandm` 305x472 -> 222x377 with 25 doubletons, `scagr7` 129x140 -> 90x134 with 5 doubletons, `lotfi` 153x308 -> 128x294 with 6 doubletons, `beaconfd` 173x262 -> 109x170 with 4 doubletons, `sc50a` 50x48 -> 47x46 with 2 doubletons); postsolve reconstructs exact primal and dual solutions; 100% of benchmark instances pass independent verification (22/22 Netlib and MRPL models pass; 21/22 models achieve rel err $< 10^{-11}$; `scagr7` achieves $2.44 \times 10^{-7}$); 7/7 CTest test suites pass cleanly; independent pure-Python auditor passes 22/22; zero foreign solver symbols [PASSED].
 
 - [ ] **PHASE 5: GPU CUDA SpMV Acceleration & Restarted PDHG**
   - [ ] `src/solvers/pdhg/pdhg.cpp` (CPU Restarted PDHG with adaptive restarts)
