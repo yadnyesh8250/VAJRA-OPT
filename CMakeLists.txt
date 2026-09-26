@@ -44,6 +44,31 @@ set(IO_SOURCES
     src/io/writer.cpp
 )
 
+# PDHG and GPU hardware abstraction sources
+set(PDHG_SOURCES
+    src/solvers/pdhg/pdhg.cpp
+    src/solvers/gpu/gpu_context.cpp
+)
+
+# Optional NVIDIA CUDA compilation
+option(INDUS_ENABLE_CUDA "Enable NVIDIA CUDA GPU acceleration" OFF)
+
+if(INDUS_ENABLE_CUDA)
+    include(CheckLanguage)
+    check_language(CUDA)
+    if(CMAKE_CUDA_COMPILER)
+        enable_language(CUDA)
+        set(CMAKE_CUDA_STANDARD 20)
+        set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+        add_compile_definitions(INDUS_HAS_CUDA=1)
+        list(APPEND PDHG_SOURCES src/solvers/gpu/pdhg_cuda.cu)
+        message(STATUS "[INDUS-OPT] CUDA compiler found: ${CMAKE_CUDA_COMPILER}")
+    else()
+        message(WARNING "[INDUS-OPT] INDUS_ENABLE_CUDA was requested, but no CUDA compiler was found on this system. Building with CPU fallback.")
+        set(INDUS_ENABLE_CUDA OFF)
+    endif()
+endif()
+
 # Git commit & dirty status detection
 execute_process(
     COMMAND git rev-parse --short HEAD
@@ -69,7 +94,7 @@ endif()
 add_compile_definitions(INDUS_GIT_COMMIT="${GIT_COMMIT_HASH}")
 
 # Library target
-add_library(indus_core STATIC ${LINALG_SOURCES} ${SIMPLEX_SOURCES} ${IO_SOURCES})
+add_library(indus_core STATIC ${LINALG_SOURCES} ${SIMPLEX_SOURCES} ${IO_SOURCES} ${PDHG_SOURCES})
 target_include_directories(indus_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -105,6 +130,11 @@ add_executable(test_presolve tests/test_presolve.cpp)
 target_link_libraries(test_presolve PRIVATE indus_core)
 add_test(NAME test_presolve COMMAND test_presolve)
 set_tests_properties(test_presolve PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_executable(test_pdhg tests/test_pdhg.cpp)
+target_link_libraries(test_pdhg PRIVATE indus_core)
+add_test(NAME test_pdhg COMMAND test_pdhg)
+set_tests_properties(test_pdhg PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # Standalone independent verifier executable
 add_executable(indus_verifier apps/verifier_cli.cpp)

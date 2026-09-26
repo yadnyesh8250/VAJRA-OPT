@@ -1,6 +1,8 @@
 #include "indus/model.hpp"
 #include "indus/presolve.hpp"
 #include "indus/verifier.hpp"
+#include "indus/pdhg.hpp"
+#include "indus/gpu.hpp"
 #include "src/solvers/simplex/simplex_core.hpp"
 #include "src/linalg/scaling.hpp"
 #include <algorithm>
@@ -183,6 +185,21 @@ Solution solve(const Model& model, const Options& options) {
     const auto start_time = std::chrono::high_resolution_clock::now();
     model.validate();
 
+    if (model.classify() == ProblemClass::kQp || model.classify() == ProblemClass::kMiqp) {
+        Solution sol;
+        sol.status = SolveStatus::kModelError;
+        sol.status_message = "Quadratic optimization is not supported by continuous LP solver";
+        sol.solve_time_seconds = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_time).count();
+        return sol;
+    }
+    if (model.has_integers()) {
+        Solution sol;
+        sol.status = SolveStatus::kModelError;
+        sol.status_message = "Integer variables are not supported by continuous LP solver";
+        sol.solve_time_seconds = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_time).count();
+        return sol;
+    }
+
     // Phase 4 Reversible Presolve Engine
     if (options.enable_presolve) {
         auto presolve_res = presolve::PresolveEngine::apply(model);
@@ -235,93 +252,98 @@ Solution solve(const Model& model, const Options& options) {
         }
     }
 
-    const int n = model.num_cols;
-    const int m = model.num_rows;
-
-    la::ScalingFactors scaling_factors;
-    la::SparseMatrixCSC scaled_A = model.A;
-    std::vector<double> scaled_c = model.c;
-    std::vector<double> scaled_row_lower = model.row_lower;
-    std::vector<double> scaled_row_upper = model.row_upper;
-    std::vector<double> scaled_col_lower = model.col_lower;
-    std::vector<double> scaled_col_upper = model.col_upper;
-
-    if (options.enable_scaling) {
-        scaling_factors = la::RuizScaler::compute_and_scale(
-            scaled_A, scaled_c,
-            scaled_row_lower, scaled_row_upper,
-            scaled_col_lower, scaled_col_upper
-        );
-    }
-
-    // Map into simplex representation [A  I] [x  s]^T = 0
-    simplex::SimplexModel smodel;
-    smodel.num_rows = m;
-    smodel.num_cols = n;
-    smodel.num_vars = m + n;
-    smodel.sense = model.sense;
-    smodel.objective_offset = model.objective_offset;
-    smodel.A = std::move(scaled_A);
-
-    smodel.lower.resize(static_cast<size_t>(n + m));
-    smodel.upper.resize(static_cast<size_t>(n + m));
-    smodel.cost.resize(static_cast<size_t>(n + m));
-
-    for (int j = 0; j < n; ++j) {
-        smodel.lower[static_cast<size_t>(j)] = scaled_col_lower[static_cast<size_t>(j)];
-        smodel.upper[static_cast<size_t>(j)] = scaled_col_upper[static_cast<size_t>(j)];
-        smodel.cost[static_cast<size_t>(j)] = (model.sense == ObjSense::kMaximize) ? -scaled_c[static_cast<size_t>(j)]
-                                                                                   : scaled_c[static_cast<size_t>(j)];
-    }
-
-    for (int i = 0; i < m; ++i) {
-        smodel.lower[static_cast<size_t>(n + i)] = -scaled_row_upper[static_cast<size_t>(i)];
-        smodel.upper[static_cast<size_t>(n + i)] = -scaled_row_lower[static_cast<size_t>(i)];
-        smodel.cost[static_cast<size_t>(n + i)] = 0.0;
-    }
-
-    simplex::SimplexCore core(std::move(smodel));
-    simplex::SimplexResult sres;
-
-    if (options.algorithm == "primal_simplex") {
-        sres = core.solve_primal(options.iteration_limit);
-    } else if (options.algorithm == "dual_simplex") {
-        sres = core.solve_dual(options.iteration_limit);
-    } else {
-        sres = core.solve(options.iteration_limit);
-    }
-
-    if (scaling_factors.is_scaled && claims_a_point(sres.status)) {
-        la::RuizScaler::unscale_primal(scaling_factors, sres.col_value);
-        la::RuizScaler::unscale_dual(scaling_factors, sres.row_dual);
-        la::RuizScaler::unscale_reduced_costs(scaling_factors, sres.col_dual);
-
-        sres.row_value.resize(static_cast<size_t>(m));
-        model.A.multiply(sres.col_value, sres.row_value);
-
-        double unscaled_obj = model.objective_offset;
-        for (int j = 0; j < n; ++j) {
-            unscaled_obj += model.c[static_cast<size_t>(j)] * sres.col_value[static_cast<size_t>(j)];
-        }
-        sres.objective_value = unscaled_obj;
-    }
-
     Solution sol;
-    sol.status = sres.status;
-    sol.status_message = sres.status_message;
-    sol.objective_value = sres.objective_value;
-    sol.best_dual_bound = sres.objective_value;
-    sol.col_value = std::move(sres.col_value);
-    sol.row_value = std::move(sres.row_value);
-    sol.row_dual = std::move(sres.row_dual);
-    sol.col_dual = std::move(sres.col_dual);
-    sol.col_basis_status = std::move(sres.col_status);
-    sol.row_basis_status = std::move(sres.row_status);
-    sol.certificate_type = std::move(sres.certificate_type);
-    sol.certificate_vector = std::move(sres.certificate_vector);
-    sol.iterations = sres.iterations;
+    if (options.algorithm == "pdhg_cuda" || (options.algorithm == "pdhg" && options.use_gpu) || (options.use_gpu)) {
+        sol = gpu::solve_pdhg_gpu(model, options);
+    } else if (options.algorithm == "pdhg" || options.algorithm == "pdhg_cpu") {
+        sol = pdhg::solve_pdhg_cpu(model, options);
+    } else {
+        const int n = model.num_cols;
+        const int m = model.num_rows;
 
-    sol.algorithm_used = options.algorithm.empty() ? "simplex_auto" : options.algorithm;
+        la::ScalingFactors scaling_factors;
+        la::SparseMatrixCSC scaled_A = model.A;
+        std::vector<double> scaled_c = model.c;
+        std::vector<double> scaled_row_lower = model.row_lower;
+        std::vector<double> scaled_row_upper = model.row_upper;
+        std::vector<double> scaled_col_lower = model.col_lower;
+        std::vector<double> scaled_col_upper = model.col_upper;
+
+        if (options.enable_scaling) {
+            scaling_factors = la::RuizScaler::compute_and_scale(
+                scaled_A, scaled_c,
+                scaled_row_lower, scaled_row_upper,
+                scaled_col_lower, scaled_col_upper
+            );
+        }
+
+        // Map into simplex representation [A  I] [x  s]^T = 0
+        simplex::SimplexModel smodel;
+        smodel.num_rows = m;
+        smodel.num_cols = n;
+        smodel.num_vars = m + n;
+        smodel.sense = model.sense;
+        smodel.objective_offset = model.objective_offset;
+        smodel.A = std::move(scaled_A);
+
+        smodel.lower.resize(static_cast<size_t>(n + m));
+        smodel.upper.resize(static_cast<size_t>(n + m));
+        smodel.cost.resize(static_cast<size_t>(n + m));
+
+        for (int j = 0; j < n; ++j) {
+            smodel.lower[static_cast<size_t>(j)] = scaled_col_lower[static_cast<size_t>(j)];
+            smodel.upper[static_cast<size_t>(j)] = scaled_col_upper[static_cast<size_t>(j)];
+            smodel.cost[static_cast<size_t>(j)] = (model.sense == ObjSense::kMaximize) ? -scaled_c[static_cast<size_t>(j)]
+                                                                                       : scaled_c[static_cast<size_t>(j)];
+        }
+
+        for (int i = 0; i < m; ++i) {
+            smodel.lower[static_cast<size_t>(n + i)] = -scaled_row_upper[static_cast<size_t>(i)];
+            smodel.upper[static_cast<size_t>(n + i)] = -scaled_row_lower[static_cast<size_t>(i)];
+            smodel.cost[static_cast<size_t>(n + i)] = 0.0;
+        }
+
+        simplex::SimplexCore core(std::move(smodel));
+        simplex::SimplexResult sres;
+
+        if (options.algorithm == "primal_simplex") {
+            sres = core.solve_primal(options.iteration_limit);
+        } else if (options.algorithm == "dual_simplex") {
+            sres = core.solve_dual(options.iteration_limit);
+        } else {
+            sres = core.solve(options.iteration_limit);
+        }
+
+        if (scaling_factors.is_scaled && claims_a_point(sres.status)) {
+            la::RuizScaler::unscale_primal(scaling_factors, sres.col_value);
+            la::RuizScaler::unscale_dual(scaling_factors, sres.row_dual);
+            la::RuizScaler::unscale_reduced_costs(scaling_factors, sres.col_dual);
+
+            sres.row_value.resize(static_cast<size_t>(m));
+            model.A.multiply(sres.col_value, sres.row_value);
+
+            double unscaled_obj = model.objective_offset;
+            for (int j = 0; j < n; ++j) {
+                unscaled_obj += model.c[static_cast<size_t>(j)] * sres.col_value[static_cast<size_t>(j)];
+            }
+            sres.objective_value = unscaled_obj;
+        }
+
+        sol.status = sres.status;
+        sol.status_message = sres.status_message;
+        sol.objective_value = sres.objective_value;
+        sol.best_dual_bound = sres.objective_value;
+        sol.col_value = std::move(sres.col_value);
+        sol.row_value = std::move(sres.row_value);
+        sol.row_dual = std::move(sres.row_dual);
+        sol.col_dual = std::move(sres.col_dual);
+        sol.col_basis_status = std::move(sres.col_status);
+        sol.row_basis_status = std::move(sres.row_status);
+        sol.certificate_type = std::move(sres.certificate_type);
+        sol.certificate_vector = std::move(sres.certificate_vector);
+        sol.iterations = sres.iterations;
+        sol.algorithm_used = options.algorithm.empty() ? "simplex_auto" : options.algorithm;
+    }
 
     const auto end_time = std::chrono::high_resolution_clock::now();
     sol.solve_time_seconds = std::chrono::duration<double>(end_time - start_time).count();
