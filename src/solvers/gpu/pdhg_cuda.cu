@@ -97,10 +97,19 @@ private:
     size_t count_ = 0;
 };
 
+// Global telemetry for the last executed GPU solve
+GpuTimingDiagnostics g_last_gpu_timing;
+
 } // namespace
+
+GpuTimingDiagnostics get_last_gpu_timing() noexcept {
+    return g_last_gpu_timing;
+}
 
 Solution solve_pdhg_cuda_internal(const Model& model, const Options& options) {
     const auto start_time = std::chrono::high_resolution_clock::now();
+    g_last_gpu_timing = {};
+    int64_t transfers = 0;
 
     const int m = model.num_rows;
     const int n = model.num_cols;
@@ -116,6 +125,11 @@ Solution solve_pdhg_cuda_internal(const Model& model, const Options& options) {
     sol.row_basis_status.resize(static_cast<size_t>(m), BasisStatus::kUnknown);
 
     if (m == 0 || n == 0) {
+        return pdhg::solve_pdhg_cpu(model, options);
+    }
+
+    // Numerical checks for invalid/zero inputs
+    if (model.A.nnz() == 0) {
         return pdhg::solve_pdhg_cpu(model, options);
     }
 
@@ -146,6 +160,12 @@ Solution solve_pdhg_cuda_internal(const Model& model, const Options& options) {
 
     // Estimate spectral norm ||A||_2
     const double spectral_norm = pdhg::estimate_spectral_norm(work_A, 25, 1e-4);
+    if (spectral_norm <= 1e-12 || std::isnan(spectral_norm) || std::isinf(spectral_norm)) {
+        sol.status = SolveStatus::kNumericalError;
+        sol.status_message = "Invalid or zero spectral norm encountered in GPU PDHG setup";
+        return sol;
+    }
+
     const double safety = 0.95;
     double tau = safety / spectral_norm;
     double sigma = safety / spectral_norm;
@@ -161,24 +181,26 @@ Solution solve_pdhg_cuda_internal(const Model& model, const Options& options) {
         h_x[static_cast<size_t>(j)] = val;
     }
 
-    // UPLOAD ONCE TO GPU VRAM BEFORE ITERATION LOOP
+    // =========================================================================
+    // UPLOAD ONCE TO GPU VRAM (Pre-Iteration Setup)
+    // =========================================================================
     const auto upload_start = std::chrono::high_resolution_clock::now();
 
     CudaBuffer<int64_t> d_row_ptr(static_cast<size_t>(m + 1));
     CudaBuffer<int> d_col_idx(static_cast<size_t>(csr_A.nnz()));
     CudaBuffer<double> d_csr_values(static_cast<size_t>(csr_A.nnz()));
 
-    d_row_ptr.upload(csr_A.row_ptr.data(), static_cast<size_t>(m + 1));
-    d_col_idx.upload(csr_A.col_idx.data(), static_cast<size_t>(csr_A.nnz()));
-    d_csr_values.upload(csr_A.values.data(), static_cast<size_t>(csr_A.nnz()));
+    d_row_ptr.upload(csr_A.row_ptr.data(), static_cast<size_t>(m + 1)); transfers++;
+    d_col_idx.upload(csr_A.col_idx.data(), static_cast<size_t>(csr_A.nnz())); transfers++;
+    d_csr_values.upload(csr_A.values.data(), static_cast<size_t>(csr_A.nnz())); transfers++;
 
     CudaBuffer<int64_t> d_col_ptr(static_cast<size_t>(n + 1));
     CudaBuffer<int> d_row_idx(static_cast<size_t>(work_A.nnz()));
     CudaBuffer<double> d_csc_values(static_cast<size_t>(work_A.nnz()));
 
-    d_col_ptr.upload(work_A.col_ptr.data(), static_cast<size_t>(n + 1));
-    d_row_idx.upload(work_A.row_idx.data(), static_cast<size_t>(work_A.nnz()));
-    d_csc_values.upload(work_A.values.data(), static_cast<size_t>(work_A.nnz()));
+    d_col_ptr.upload(work_A.col_ptr.data(), static_cast<size_t>(n + 1)); transfers++;
+    d_row_idx.upload(work_A.row_idx.data(), static_cast<size_t>(work_A.nnz())); transfers++;
+    d_csc_values.upload(work_A.values.data(), static_cast<size_t>(work_A.nnz())); transfers++;
 
     CudaBuffer<double> d_row_lower(static_cast<size_t>(m));
     CudaBuffer<double> d_row_upper(static_cast<size_t>(m));
@@ -186,36 +208,43 @@ Solution solve_pdhg_cuda_internal(const Model& model, const Options& options) {
     CudaBuffer<double> d_col_upper(static_cast<size_t>(n));
     CudaBuffer<double> d_c(static_cast<size_t>(n));
 
-    d_row_lower.upload(work_row_lower.data(), static_cast<size_t>(m));
-    d_row_upper.upload(work_row_upper.data(), static_cast<size_t>(m));
-    d_col_lower.upload(work_col_lower.data(), static_cast<size_t>(n));
-    d_col_upper.upload(work_col_upper.data(), static_cast<size_t>(n));
-    d_c.upload(work_c.data(), static_cast<size_t>(n));
+    d_row_lower.upload(work_row_lower.data(), static_cast<size_t>(m)); transfers++;
+    d_row_upper.upload(work_row_upper.data(), static_cast<size_t>(m)); transfers++;
+    d_col_lower.upload(work_col_lower.data(), static_cast<size_t>(n)); transfers++;
+    d_col_upper.upload(work_col_upper.data(), static_cast<size_t>(n)); transfers++;
+    d_c.upload(work_c.data(), static_cast<size_t>(n)); transfers++;
 
-    // Iteration buffers in VRAM
+    // Work vectors in VRAM
     CudaBuffer<double> d_x(static_cast<size_t>(n));
     CudaBuffer<double> d_x_bar(static_cast<size_t>(n));
     CudaBuffer<double> d_y(static_cast<size_t>(m));
     CudaBuffer<double> d_w(static_cast<size_t>(m)); // A * x_bar
     CudaBuffer<double> d_v(static_cast<size_t>(n)); // A^T * y
-    CudaBuffer<double> d_residuals(2);             // [0] = max_prim_viol, [1] = max_dual_viol
+    CudaBuffer<DeviceDiagnostics> d_diag(1);         // 48-byte diagnostics struct
 
-    d_x.upload(h_x.data(), static_cast<size_t>(n));
-    d_x_bar.upload(h_x.data(), static_cast<size_t>(n));
+    d_x.upload(h_x.data(), static_cast<size_t>(n)); transfers++;
+    d_x_bar.upload(h_x.data(), static_cast<size_t>(n)); transfers++;
     d_y.zero();
 
+    CUDA_CHECK(cudaDeviceSynchronize());
     const auto upload_end = std::chrono::high_resolution_clock::now();
     const double upload_time_sec = std::chrono::duration<double>(upload_end - upload_start).count();
 
-    // Warp-level kernel configurations (32 threads per warp, 8 warps per block = 256 threads)
+    // =========================================================================
+    // KERNEL DISPATCH CONFIGURATION (Warp-Aggregated & Safe Grid Sizing)
+    // =========================================================================
     const int threads_per_warp = 32;
     const int warps_per_block = 8;
-    const int block_size = warps_per_block * threads_per_warp;
+    const int block_size = warps_per_block * threads_per_warp; // 256 threads per block
+
+    // Warp-aggregated grid sizes (1 warp per row / col)
     const int grid_warp_rows = (m + warps_per_block - 1) / warps_per_block;
     const int grid_warp_cols = (n + warps_per_block - 1) / warps_per_block;
+
+    // Element-wise grid sizes
     const int grid_scalar_rows = (m + block_size - 1) / block_size;
     const int grid_scalar_cols = (n + block_size - 1) / block_size;
-    const int grid_residuals = (std::max(m, n) + block_size - 1) / block_size;
+    const int grid_diag = (std::max(m, n) + block_size - 1) / block_size;
 
     const int64_t max_iter = options.iteration_limit;
     const int check_freq = static_cast<int>(options.get_int("check_frequency", 200));
@@ -224,41 +253,51 @@ Solution solve_pdhg_cuda_internal(const Model& model, const Options& options) {
     const auto iter_start = std::chrono::high_resolution_clock::now();
     int64_t iter = 0;
     bool converged = false;
-    double h_residuals[2] = {1e20, 1e20};
+    DeviceDiagnostics h_diag = {};
 
-    // VRAM-RESIDENT ITERATION LOOP: ZERO HOST-DEVICE VECTOR TRANSFERS INSIDE LOOP
+    // =========================================================================
+    // VRAM-RESIDENT GPU ITERATION LOOP: ZERO HOST-DEVICE VECTOR TRANSFERS
+    // =========================================================================
     for (iter = 1; iter <= max_iter; ++iter) {
-        // 1. Forward Warp-Aggregated SpMV: d_w = A * d_x_bar
+        // 1. Forward SpMV: Warp-Aggregated Cooperative Reduction (d_w = A * d_x_bar)
         kernels::spmv_csr_warp_kernel<<<grid_warp_rows, block_size>>>(
             m, d_row_ptr.get(), d_col_idx.get(), d_csr_values.get(),
             d_x_bar.get(), d_w.get());
 
-        // 2. Dual Update & Moreau Projection: d_y = prox(d_y + sigma * d_w)
+        // 2. Dual Moreau Update Kernel: d_y = prox(d_y + sigma * d_w)
         kernels::dual_update_kernel<<<grid_scalar_rows, block_size>>>(
             m, sigma, d_w.get(), d_row_lower.get(), d_row_upper.get(), d_y.get());
 
-        // 3. Transpose Warp-Aggregated SpMV: d_v = A^T * d_y
+        // 3. Transpose SpMV: Warp-Aggregated Cooperative Reduction (d_v = Aᵀ * d_y)
         kernels::spmv_csc_transpose_warp_kernel<<<grid_warp_cols, block_size>>>(
             n, d_col_ptr.get(), d_row_idx.get(), d_csc_values.get(),
             d_y.get(), d_v.get());
 
-        // 4. Primal Update & Bound Clipping & Halpern Extrapolation
+        // 4. Primal Update & Halpern Extrapolation: d_x, d_x_bar
         kernels::primal_update_kernel<<<grid_scalar_cols, block_size>>>(
             n, tau, d_v.get(), d_c.get(), d_col_lower.get(), d_col_upper.get(),
             d_x.get(), d_x_bar.get());
 
-        // Periodic stopping check: evaluates residuals on-device and downloads ONLY 2 scalars (16 bytes)
+        // 5. Periodic Stopping Check: Evaluate Residuals and Objective inside VRAM
         if (iter % check_freq == 0 || iter == max_iter) {
-            d_residuals.zero();
-            kernels::compute_residuals_device_kernel<<<grid_residuals, block_size>>>(
+            d_diag.zero();
+            kernels::compute_diagnostics_device_kernel<<<grid_diag, block_size>>>(
                 m, n, d_w.get(), d_row_lower.get(), d_row_upper.get(),
-                d_v.get(), d_c.get(), d_x.get(), d_col_lower.get(), d_col_upper.get(),
-                d_residuals.get());
+                d_v.get(), d_c.get(), d_x.get(), d_y.get(),
+                d_col_lower.get(), d_col_upper.get(), tol_val,
+                d_diag.get());
 
-            // Download ONLY the 2 scalar residuals (no full vector transfer)
-            d_residuals.download(h_residuals, 2);
+            // Transfer ONLY the 48-byte diagnostics structure (ZERO full-vector transfer!)
+            d_diag.download(&h_diag, 1);
+            transfers++;
 
-            if (h_residuals[0] <= tol_val && h_residuals[1] <= tol_val) {
+            if (h_diag.numerical_error) {
+                sol.status = SolveStatus::kNumericalError;
+                sol.status_message = "NaN or Inf detected by GPU device diagnostics kernel";
+                break;
+            }
+
+            if (h_diag.primal_residual <= tol_val && h_diag.dual_residual <= tol_val) {
                 converged = true;
                 sol.status = SolveStatus::kOptimal;
                 sol.status_message = "CUDA PDHG converged to required tolerance";
@@ -275,10 +314,27 @@ Solution solve_pdhg_cuda_internal(const Model& model, const Options& options) {
 
     CUDA_CHECK(cudaDeviceSynchronize());
     const auto iter_end = std::chrono::high_resolution_clock::now();
+    const double iter_time_sec = std::chrono::duration<double>(iter_end - iter_start).count();
 
-    // DOWNLOAD FULL ITERATES ONCE UPON COMPLETION
-    d_x.download(sol.col_value.data(), static_cast<size_t>(n));
-    d_y.download(sol.row_dual.data(), static_cast<size_t>(m));
+    // =========================================================================
+    // DOWNLOAD FULL ITERATE VECTORS ONCE UPON COMPLETION
+    // =========================================================================
+    const auto download_start = std::chrono::high_resolution_clock::now();
+    d_x.download(sol.col_value.data(), static_cast<size_t>(n)); transfers++;
+    d_y.download(sol.row_dual.data(), static_cast<size_t>(m)); transfers++;
+    CUDA_CHECK(cudaDeviceSynchronize());
+    const auto download_end = std::chrono::high_resolution_clock::now();
+    const double download_time_sec = std::chrono::duration<double>(download_end - download_start).count();
+
+    // Record complete telemetry
+    g_last_gpu_timing.upload_time_sec = upload_time_sec;
+    g_last_gpu_timing.iteration_time_sec = iter_time_sec;
+    g_last_gpu_timing.download_time_sec = download_time_sec;
+    g_last_gpu_timing.total_time_sec = std::chrono::duration<double>(download_end - start_time).count();
+    g_last_gpu_timing.host_device_transfers = transfers;
+    g_last_gpu_timing.iterations = iter;
+    g_last_gpu_timing.device_name = probe_device().device_name;
+    g_last_gpu_timing.kernel_mode = "warp_aggregated_csr";
 
     if (scaling_factors.is_scaled) {
         la::RuizScaler::unscale_primal(scaling_factors, sol.col_value);
@@ -308,7 +364,7 @@ Solution solve_pdhg_cuda_internal(const Model& model, const Options& options) {
     }
 
     sol.iterations = iter;
-    sol.solve_time_seconds = std::chrono::duration<double>(iter_end - start_time).count();
+    sol.solve_time_seconds = g_last_gpu_timing.total_time_sec;
     if (!converged && sol.status == SolveStatus::kNotSolved) {
         sol.status = SolveStatus::kIterationLimit;
         sol.status_message = "CUDA PDHG reached iteration limit";

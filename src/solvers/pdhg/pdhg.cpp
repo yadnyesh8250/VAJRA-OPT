@@ -439,9 +439,17 @@ Solution CpuPdhgSolver::solve() {
     return sol;
 }
 
+static thread_local PdhgDiagnostics g_last_cpu_pdhg_diag;
+
+const PdhgDiagnostics& get_last_cpu_pdhg_diagnostics() noexcept {
+    return g_last_cpu_pdhg_diag;
+}
+
 Solution solve_pdhg_cpu(const Model& model, const Options& options) {
     CpuPdhgSolver solver(model, options);
-    return solver.solve();
+    Solution sol = solver.solve();
+    g_last_cpu_pdhg_diag = solver.diagnostics();
+    return sol;
 }
 
 } // namespace indus::pdhg

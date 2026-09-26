@@ -79,4 +79,14 @@ Solution solve_pdhg_gpu(const Model& model, const Options& options) {
 #endif
 }
 
+#ifndef INDUS_HAS_CUDA
+GpuTimingDiagnostics get_last_gpu_timing() noexcept {
+    GpuTimingDiagnostics diag;
+    diag.device_name = "None (CPU Fallback)";
+    diag.kernel_mode = "CPU Reference Engine";
+    diag.host_device_transfers = 0;
+    return diag;
+}
+#endif
+
 } // namespace indus::gpu

@@ -136,6 +136,13 @@ target_link_libraries(test_pdhg PRIVATE indus_core)
 add_test(NAME test_pdhg COMMAND test_pdhg)
 set_tests_properties(test_pdhg PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
+if(INDUS_ENABLE_CUDA AND CMAKE_CUDA_COMPILER)
+    add_executable(test_cuda_kernels tests/test_cuda_kernels.cu)
+    target_link_libraries(test_cuda_kernels PRIVATE indus_core)
+    add_test(NAME test_cuda_kernels COMMAND test_cuda_kernels)
+    set_tests_properties(test_cuda_kernels PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
 # Standalone independent verifier executable
 add_executable(indus_verifier apps/verifier_cli.cpp)
 target_link_libraries(indus_verifier PRIVATE indus_core)

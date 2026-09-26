@@ -10,6 +10,10 @@
 
 namespace indus::pdhg {
 
+using indus::Model;
+using indus::Options;
+using indus::Solution;
+
 struct PdhgOptions {
     int64_t max_iterations = 50000;
     double time_limit = 1e20;
@@ -58,5 +62,8 @@ private:
 
 // Convenience entry point for CPU PDHG
 Solution solve_pdhg_cpu(const Model& model, const Options& options = Options());
+
+// Retrieve telemetry from the most recent CPU PDHG solve
+[[nodiscard]] const PdhgDiagnostics& get_last_cpu_pdhg_diagnostics() noexcept;
 
 } // namespace indus::pdhg
