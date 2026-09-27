@@ -199,20 +199,40 @@ The multi-engine benchmark harness supports explicit execution contracts:
    ```
 
 2. **Full Reference Verification Mode (`--full` / default):**
-   - Runs full 50,000-iteration budgets on reference models.
-   - Enforces independent mathematical verification and published-objective matching for Suite 2 reference models.
-   - Verifies 100% of Suite 3 QP instances.
+   - Runs full iteration budgets on reference models.
+   - Enforces independent mathematical verification and published-objective matching for reference models.
+   - Verifies 100% of Suite 3 (MILP) and Suite 4 (QP) instances.
    - Exits nonzero if any reference model fails verification or convergence limits.
    ```bash
-   ./build-cpu/indus_benchmark --full --csv build-cpu/benchmark_results.csv
+   ./build/indus_benchmark --full --suite all --csv build/benchmark_results.csv --json build/benchmark_results.json
    ```
 
-### C. Independent Solution Verification Tool
+3. **Suite-Specific Benchmarking (`--suite <name>`):**
+   - Run specific problem class suites: `lp`, `milp`, `qp`, `pdhg`, `cuda`, or `all`.
+   ```bash
+   ./build/indus_benchmark --suite milp --quick
+   ./build/indus_benchmark --suite qp --quick
+   ./build/indus_benchmark --suite lp --quick
+   ```
+
+### C. Industrial Case Study Demonstrations
+Run the automated demonstration suite executing and independently auditing all 7 MRPL refinery optimization models:
+```bash
+./scripts/run_industrial_demos.sh
+```
+
+### D. Fair External Solver Comparison
+Run the side-by-side comparison against reference open-source engines (e.g. HiGHS via SciPy) under identical stopping conditions and models:
+```bash
+python3 scripts/compare_external_solvers.py
+```
+
+### E. Independent Solution Verification Tool
 You can independently verify any solution file (`.sol`) against its model (`.mps` or `.lp`):
 
 **Using C++ Audit CLI:**
 ```bash
-./build-cpu/indus_verifier SOVEREIGN_SOLVER_BLUEPRINT/test_models/crude_blend.lp artifacts/solutions/crude_blend.sol --tol 1e-4
+./build/indus_verifier SOVEREIGN_SOLVER_BLUEPRINT/test_models/crude_blend.lp artifacts/solutions/crude_blend.sol --tol 1e-4
 ```
 
 **Using Pure Python Auditor (Zero Dependencies):**
@@ -222,14 +242,15 @@ python3 validator/independent_verifier.py SOVEREIGN_SOLVER_BLUEPRINT/test_models
 
 ---
 
-## 6. CUDA Hardware Validation Status
+## 6. CUDA Hardware Validation Status (Phase 9B Protocol)
 
 - **CUDA Source Code:** Fully implemented in `src/solvers/gpu/pdhg_cuda.cu` and `spmv_kernels.cuh`.
 - **Warp SpMV & Device Reductions:** Complete and active.
 - **Mathematical Specification:** 100% verified via CPU mathematical equivalence tests in `test_pdhg.cpp`.
 - **Host-Device Transfer Pipeline:** Enforced zero-transfer loop (transfers only 48-byte diagnostics struct per check interval).
 - **Graceful Fallback:** Verified on CPU-only machines. If CUDA is disabled or no NVIDIA device exists, the solver falls back smoothly to CPU Restarted PDHG.
-- **Physical GPU Execution:** **NOT HARDWARE VALIDATED / PENDING NVIDIA TESTBED.** The current build host is an Apple Silicon Mac without an NVIDIA GPU or `nvcc`. No physical speedup or hardware execution is claimed without discrete NVIDIA hardware validation.
+- **Physical GPU Execution:** **NOT HARDWARE VALIDATED / PENDING PHYSICAL NVIDIA TESTBED.** The current build host is an Apple Silicon Mac without an NVIDIA GPU or `nvcc`. No physical speedup or hardware execution is claimed without discrete NVIDIA hardware validation. The execution protocol is fully detailed in [`CUDA_VALIDATION_WORKFLOW.md`](file:///Users/yadnyesh8250/Desktop/VAJRA-OPT/SOVEREIGN_SOLVER_BLUEPRINT/CUDA_VALIDATION_WORKFLOW.md).
+- **Validation Script:** Run `./scripts/validate_cuda.sh` to probe GPU/nvcc status.
 
 ---
 
@@ -245,6 +266,7 @@ python3 validator/independent_verifier.py SOVEREIGN_SOLVER_BLUEPRINT/test_models
 ---
 
 ## 8. Sovereign Engineering Standards
-- **Zero Foreign Solvers:** 100% self-contained codebase; zero calls to HiGHS, GLPK, CBC, Gurobi, or CPLEX.
+- **Zero Foreign Solvers:** 100% self-contained codebase; zero calls to HiGHS, GLPK, CBC, Gurobi, or CPLEX inside `indus_core`.
 - **No Third-Party Bloat:** Standard C++ STL and zero required external libraries.
-- **Audit Rigor:** No model is marked `OPTIMAL` unless verified by the independent verification spine against KKT conditions.
+- **Audit Rigor:** No model is marked `OPTIMAL` unless verified by the independent verification spine against KKT and integrality conditions.
+- **Anti-Fabrication:** Solvers that fail or reach limits are never labeled `OPTIMAL` or `PASSED`. Speedups are never reported without verified physical GPU execution.

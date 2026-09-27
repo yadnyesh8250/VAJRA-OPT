@@ -178,6 +178,16 @@ target_link_libraries(test_qp PRIVATE indus_core)
 add_test(NAME test_qp COMMAND test_qp)
 set_tests_properties(test_qp PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
+add_executable(test_benchmark_harness tests/test_benchmark_harness.cpp)
+target_link_libraries(test_benchmark_harness PRIVATE indus_core)
+add_dependencies(test_benchmark_harness indus_benchmark)
+target_compile_definitions(test_benchmark_harness PRIVATE
+    INDUS_BENCHMARK_BIN="$<TARGET_FILE:indus_benchmark>"
+    INDUS_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}"
+)
+add_test(NAME test_benchmark_harness COMMAND test_benchmark_harness "$<TARGET_FILE:indus_benchmark>")
+set_tests_properties(test_benchmark_harness PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 180)
+
 if(INDUS_ENABLE_CUDA AND CMAKE_CUDA_COMPILER)
     add_executable(test_cuda_kernels tests/test_cuda_kernels.cu)
     target_link_libraries(test_cuda_kernels PRIVATE indus_core)
@@ -185,7 +195,7 @@ if(INDUS_ENABLE_CUDA AND CMAKE_CUDA_COMPILER)
     set_tests_properties(test_cuda_kernels PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
-add_test(NAME test_benchmark COMMAND indus_benchmark --quick --out-dir "${CMAKE_CURRENT_BINARY_DIR}/benchmark_artifacts" --csv "${CMAKE_CURRENT_BINARY_DIR}/benchmark_results.csv")
+add_test(NAME test_benchmark COMMAND indus_benchmark --quick --out-dir "${CMAKE_CURRENT_BINARY_DIR}/benchmark_artifacts" --csv "${CMAKE_CURRENT_BINARY_DIR}/benchmark_results.csv" --json "${CMAKE_CURRENT_BINARY_DIR}/benchmark_results.json")
 set_tests_properties(test_benchmark PROPERTIES
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     TIMEOUT 600
