@@ -45,7 +45,7 @@ class MPSModel:
 def parse_mps_independent(filepath: str) -> MPSModel:
     model = MPSModel()
     
-    with open(filepath, 'r') as f:
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
         
     section = None
@@ -192,6 +192,177 @@ def parse_mps_independent(filepath: str) -> MPSModel:
     return model
 
 
+def parse_lp_independent(filepath: str) -> MPSModel:
+    model = MPSModel()
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        lines = f.readlines()
+        
+    cleaned_lines = []
+    for line in lines:
+        c_pos = line.find('\\')
+        if c_pos != -1:
+            line = line[:c_pos]
+        line = line.strip()
+        if line:
+            cleaned_lines.append(line)
+            
+    full_text = " ".join(cleaned_lines)
+    tokens = full_text.split()
+    i = 0
+    section = None
+    while i < len(tokens):
+        tok = tokens[i]
+        tok_upper = tok.upper()
+        if tok_upper in ("MAXIMIZE", "MAX"):
+            model.sense = "MAX"
+            section = "OBJ"
+            i += 1
+            continue
+        elif tok_upper in ("MINIMIZE", "MIN"):
+            model.sense = "MIN"
+            section = "OBJ"
+            i += 1
+            continue
+        elif tok_upper in ("SUBJECT", "ST", "S.T."):
+            if tok_upper == "SUBJECT" and i + 1 < len(tokens) and tokens[i+1].upper() == "TO":
+                i += 2
+            else:
+                i += 1
+            section = "CONSTRAINTS"
+            continue
+        elif tok_upper == "BOUNDS":
+            section = "BOUNDS"
+            i += 1
+            continue
+        elif tok_upper == "END":
+            break
+            
+        if section == "OBJ":
+            if tok.endswith(":"):
+                model.obj_name = tok[:-1]
+                i += 1
+                continue
+            sign = 1.0
+            coeff = 1.0
+            coeff_seen = False
+            while i < len(tokens) and tokens[i].upper() not in ("SUBJECT", "ST", "S.T.", "BOUNDS", "END"):
+                t = tokens[i]
+                if t == "+":
+                    sign = 1.0
+                elif t == "-":
+                    sign = -1.0
+                elif re.match(r"^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$", t):
+                    coeff = float(t)
+                    coeff_seen = True
+                else:
+                    var = t
+                    val = sign * (coeff if coeff_seen else 1.0)
+                    model.col_obj[var] = val
+                    if var not in model.col_order:
+                        model.col_order.append(var)
+                        model.col_coeffs[var] = []
+                        model.col_lower[var] = 0.0
+                        model.col_upper[var] = math.inf
+                    sign = 1.0
+                    coeff = 1.0
+                    coeff_seen = False
+                i += 1
+        elif section == "CONSTRAINTS":
+            if tok.endswith(":"):
+                row_name = tok[:-1]
+                i += 1
+            else:
+                row_name = f"R{len(model.row_order)+1}"
+            model.row_order.append(row_name)
+            
+            c_tokens = []
+            while i < len(tokens) and tokens[i].upper() not in ("BOUNDS", "END", "SUBJECT", "ST", "S.T.") and not (tokens[i].endswith(":") and tokens[i] not in ("<=", ">=", "=")):
+                c_tokens.append(tokens[i])
+                i += 1
+                
+            def parse_expr(e_tokens):
+                pairs = []
+                sign = 1.0
+                coeff = 1.0
+                c_seen = False
+                for t in e_tokens:
+                    if t == "+": sign = 1.0
+                    elif t == "-": sign = -1.0
+                    elif re.match(r"^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$", t):
+                        coeff = float(t)
+                        c_seen = True
+                    else:
+                        var = t
+                        val = sign * (coeff if c_seen else 1.0)
+                        pairs.append((var, val))
+                        sign = 1.0
+                        coeff = 1.0
+                        c_seen = False
+                return pairs
+                
+            ops = [k for k, t in enumerate(c_tokens) if t in ("<=", ">=", "=")]
+            if len(ops) == 2:
+                v1 = float(c_tokens[0])
+                v2 = float(c_tokens[-1])
+                expr_tokens = c_tokens[ops[0]+1:ops[1]]
+                for var, val in parse_expr(expr_tokens):
+                    if var not in model.col_coeffs:
+                        model.col_order.append(var)
+                        model.col_coeffs[var] = []
+                        model.col_obj[var] = 0.0
+                        model.col_lower[var] = 0.0
+                        model.col_upper[var] = math.inf
+                    model.col_coeffs[var].append((row_name, val))
+                model.row_lower[row_name] = v1
+                model.row_upper[row_name] = v2
+                model.row_types[row_name] = "E" if v1 == v2 else "L"
+            elif len(ops) == 1:
+                op = c_tokens[ops[0]]
+                rhs = float(c_tokens[ops[0]+1])
+                expr_tokens = c_tokens[:ops[0]]
+                for var, val in parse_expr(expr_tokens):
+                    if var not in model.col_coeffs:
+                        model.col_order.append(var)
+                        model.col_coeffs[var] = []
+                        model.col_obj[var] = 0.0
+                        model.col_lower[var] = 0.0
+                        model.col_upper[var] = math.inf
+                    model.col_coeffs[var].append((row_name, val))
+                if op == "<=":
+                    model.row_lower[row_name] = -math.inf
+                    model.row_upper[row_name] = rhs
+                    model.row_types[row_name] = "L"
+                elif op == ">=":
+                    model.row_lower[row_name] = rhs
+                    model.row_upper[row_name] = math.inf
+                    model.row_types[row_name] = "G"
+                elif op == "=":
+                    model.row_lower[row_name] = rhs
+                    model.row_upper[row_name] = rhs
+                    model.row_types[row_name] = "E"
+        elif section == "BOUNDS":
+            b_tokens = []
+            while i < len(tokens) and tokens[i].upper() not in ("END",):
+                b_tokens.append(tokens[i])
+                i += 1
+            idx = 0
+            while idx < len(b_tokens):
+                if idx + 2 < len(b_tokens) and b_tokens[idx+1] in (">=", "<=", "="):
+                    var = b_tokens[idx]
+                    op = b_tokens[idx+1]
+                    val = float(b_tokens[idx+2])
+                    if var in model.col_lower:
+                        if op == ">=": model.col_lower[var] = val
+                        elif op == "<=": model.col_upper[var] = val
+                        elif op == "=":
+                            model.col_lower[var] = val
+                            model.col_upper[var] = val
+                    idx += 3
+                else:
+                    idx += 1
+    return model
+
+
 class Solution:
     def __init__(self):
         self.status: str = ""
@@ -205,7 +376,7 @@ class Solution:
 def parse_solution_independent(filepath: str, model: MPSModel) -> Solution:
     sol = Solution()
     
-    with open(filepath, 'r') as f:
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
         
     in_columns = False
@@ -295,8 +466,11 @@ def parse_solution_independent(filepath: str, model: MPSModel) -> Solution:
     return sol
 
 
-def verify_sovereign(mps_path: str, sol_path: str, tol: float = 1e-6) -> Tuple[bool, List[str]]:
-    model = parse_mps_independent(mps_path)
+def verify_sovereign(model_path: str, sol_path: str, tol: float = 1e-6) -> Tuple[bool, List[str]]:
+    if model_path.lower().endswith('.lp'):
+        model = parse_lp_independent(model_path)
+    else:
+        model = parse_mps_independent(model_path)
     sol = parse_solution_independent(sol_path, model)
     
     violations = []
@@ -383,19 +557,19 @@ def verify_sovereign(mps_path: str, sol_path: str, tol: float = 1e-6) -> Tuple[b
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python3 independent_verifier.py <model.mps> <solution.sol> [tolerance]")
+        print("Usage: python3 independent_verifier.py <model.mps|model.lp> <solution.sol> [tolerance]")
         sys.exit(1)
         
-    mps_path = sys.argv[1]
+    model_path = sys.argv[1]
     sol_path = sys.argv[2]
     tol = float(sys.argv[3]) if len(sys.argv) > 3 else 1e-6
     
-    print(f"[SOVEREIGN INDEPENDENT AUDIT] Model: {mps_path}")
+    print(f"[SOVEREIGN INDEPENDENT AUDIT] Model: {model_path}")
     print(f"[SOVEREIGN INDEPENDENT AUDIT] Solution: {sol_path}")
     print(f"[SOVEREIGN INDEPENDENT AUDIT] Tolerance: {tol:.1e}")
     
     try:
-        passed, violations = verify_sovereign(mps_path, sol_path, tol)
+        passed, violations = verify_sovereign(model_path, sol_path, tol)
     except Exception as e:
         print(f"\n[REJECTED] Verification halted due to syntax / integrity error: {e}")
         sys.exit(1)

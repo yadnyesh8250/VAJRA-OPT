@@ -1,0 +1,12 @@
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-cuda-requested/CMakeFiles/indus_core.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-cuda-requested/CMakeFiles/test_linalg.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-cuda-requested/CMakeFiles/test_simplex.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-cuda-requested/CMakeFiles/test_io.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-cuda-requested/CMakeFiles/test_regression.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-cuda-requested/CMakeFiles/test_presolve.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-cuda-requested/CMakeFiles/test_pdhg.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-cuda-requested/CMakeFiles/indus_verifier.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-cuda-requested/CMakeFiles/indus_benchmark.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-cuda-requested/CMakeFiles/test.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-cuda-requested/CMakeFiles/edit_cache.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-cuda-requested/CMakeFiles/rebuild_cache.dir

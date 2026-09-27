@@ -102,6 +102,7 @@ target_include_directories(indus_core PUBLIC
 )
 
 add_compile_definitions(INDUS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+add_compile_definitions(INDUS_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}")
 
 # Test executables
 enable_testing()
@@ -116,8 +117,24 @@ target_link_libraries(test_simplex PRIVATE indus_core)
 add_test(NAME test_simplex COMMAND test_simplex)
 set_tests_properties(test_simplex PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
+# Standalone solver CLI executable
+add_executable(indus_solve apps/solve_cli.cpp)
+target_link_libraries(indus_solve PRIVATE indus_core)
+
+# Standalone independent verifier executable
+add_executable(indus_verifier apps/verifier_cli.cpp)
+target_link_libraries(indus_verifier PRIVATE indus_core)
+
+# Benchmark runner executable
+add_executable(indus_benchmark apps/benchmark_runner.cpp)
+target_link_libraries(indus_benchmark PRIVATE indus_core)
+
 add_executable(test_io tests/test_io.cpp)
 target_link_libraries(test_io PRIVATE indus_core)
+add_dependencies(test_io indus_benchmark)
+target_compile_definitions(test_io PRIVATE
+    INDUS_BENCHMARK_BIN="$<TARGET_FILE:indus_benchmark>"
+)
 add_test(NAME test_io COMMAND test_io)
 set_tests_properties(test_io PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
@@ -136,6 +153,11 @@ target_link_libraries(test_pdhg PRIVATE indus_core)
 add_test(NAME test_pdhg COMMAND test_pdhg)
 set_tests_properties(test_pdhg PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
+add_executable(test_reliability tests/test_reliability.cpp)
+target_link_libraries(test_reliability PRIVATE indus_core)
+add_test(NAME test_reliability COMMAND test_reliability)
+set_tests_properties(test_reliability PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
 if(INDUS_ENABLE_CUDA AND CMAKE_CUDA_COMPILER)
     add_executable(test_cuda_kernels tests/test_cuda_kernels.cu)
     target_link_libraries(test_cuda_kernels PRIVATE indus_core)
@@ -143,18 +165,21 @@ if(INDUS_ENABLE_CUDA AND CMAKE_CUDA_COMPILER)
     set_tests_properties(test_cuda_kernels PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
-# Standalone independent verifier executable
-add_executable(indus_verifier apps/verifier_cli.cpp)
-target_link_libraries(indus_verifier PRIVATE indus_core)
-
-# Benchmark runner executable
-add_executable(indus_benchmark apps/benchmark_runner.cpp)
-target_link_libraries(indus_benchmark PRIVATE indus_core)
-add_test(NAME test_benchmark COMMAND indus_benchmark --out-dir "${CMAKE_CURRENT_BINARY_DIR}/benchmark_artifacts" --csv "${CMAKE_CURRENT_BINARY_DIR}/benchmark_results.csv")
-set_tests_properties(test_benchmark PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME test_benchmark COMMAND indus_benchmark --quick --out-dir "${CMAKE_CURRENT_BINARY_DIR}/benchmark_artifacts" --csv "${CMAKE_CURRENT_BINARY_DIR}/benchmark_results.csv")
+set_tests_properties(test_benchmark PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    TIMEOUT 600
+)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
+if(NOT Python3_FOUND)
+    find_program(Python3_EXECUTABLE NAMES python3 python)
+    if(Python3_EXECUTABLE)
+        set(Python3_FOUND TRUE)
+    endif()
+endif()
+
 if(Python3_FOUND)
     add_test(NAME test_python_verifier COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/validator/independent_verifier.py" "${CMAKE_CURRENT_SOURCE_DIR}/SOVEREIGN_SOLVER_BLUEPRINT/test_models/afiro.mps" "${CMAKE_CURRENT_BINARY_DIR}/benchmark_artifacts/afiro.sol")
-    set_tests_properties(test_python_verifier PROPERTIES DEPENDS test_benchmark WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(test_python_verifier PROPERTIES DEPENDS test_benchmark WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 120)
 endif()

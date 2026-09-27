@@ -200,6 +200,74 @@ Solution solve(const Model& model, const Options& options) {
         return sol;
     }
 
+    if (options.time_limit <= 0.0) {
+        Solution sol;
+        sol.status = SolveStatus::kTimeLimit;
+        sol.status_message = "Time limit exceeded before solve commenced";
+        sol.solve_time_seconds = 0.0;
+        return sol;
+    }
+
+    // Edge case 1: Zero variables (empty or constraint-only model)
+    if (model.num_cols == 0) {
+        Solution sol;
+        sol.solve_time_seconds = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_time).count();
+        sol.objective_value = model.objective_offset;
+        for (int i = 0; i < model.num_rows; ++i) {
+            if (0.0 < model.row_lower[static_cast<size_t>(i)] - tol::kPrimalFeasibility ||
+                0.0 > model.row_upper[static_cast<size_t>(i)] + tol::kPrimalFeasibility) {
+                sol.status = SolveStatus::kInfeasible;
+                sol.status_message = "Empty model constraint violated at row " + std::to_string(i);
+                return sol;
+            }
+        }
+        sol.status = SolveStatus::kOptimal;
+        sol.status_message = "Model with zero variables solved trivially";
+        return sol;
+    }
+
+    // Edge case 2: Zero constraints (box-bounded variables)
+    if (model.num_rows == 0) {
+        Solution sol;
+        sol.col_value.resize(static_cast<size_t>(model.num_cols), 0.0);
+        sol.col_dual.resize(static_cast<size_t>(model.num_cols), 0.0);
+        double obj = model.objective_offset;
+        for (int j = 0; j < model.num_cols; ++j) {
+            const double raw_cj = model.c[static_cast<size_t>(j)];
+            const double cj = (model.sense == ObjSense::kMaximize) ? -raw_cj : raw_cj;
+            const double lj = model.col_lower[static_cast<size_t>(j)];
+            const double uj = model.col_upper[static_cast<size_t>(j)];
+            double xj = 0.0;
+            if (cj > tol::kDualFeasibility) {
+                if (lj <= -1e20) {
+                    sol.status = SolveStatus::kUnbounded;
+                    sol.status_message = "Unbounded variable " + (model.col_names.empty() ? std::to_string(j) : model.col_names[static_cast<size_t>(j)]);
+                    sol.solve_time_seconds = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_time).count();
+                    return sol;
+                }
+                xj = lj;
+            } else if (cj < -tol::kDualFeasibility) {
+                if (uj >= 1e20) {
+                    sol.status = SolveStatus::kUnbounded;
+                    sol.status_message = "Unbounded variable " + (model.col_names.empty() ? std::to_string(j) : model.col_names[static_cast<size_t>(j)]);
+                    sol.solve_time_seconds = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_time).count();
+                    return sol;
+                }
+                xj = uj;
+            } else {
+                xj = std::clamp(0.0, lj, uj);
+            }
+            sol.col_value[static_cast<size_t>(j)] = xj;
+            sol.col_dual[static_cast<size_t>(j)] = cj;
+            obj += raw_cj * xj;
+        }
+        sol.status = SolveStatus::kOptimal;
+        sol.status_message = "Unconstrained model solved trivially";
+        sol.objective_value = obj;
+        sol.solve_time_seconds = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_time).count();
+        return sol;
+    }
+
     // Phase 4 Reversible Presolve Engine
     if (options.enable_presolve) {
         auto presolve_res = presolve::PresolveEngine::apply(model);

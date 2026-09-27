@@ -1,0 +1,13 @@
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-clean/CMakeFiles/indus_core.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-clean/CMakeFiles/test_linalg.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-clean/CMakeFiles/test_simplex.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-clean/CMakeFiles/test_io.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-clean/CMakeFiles/test_regression.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-clean/CMakeFiles/test_presolve.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-clean/CMakeFiles/test_pdhg.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-clean/CMakeFiles/test_reliability.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-clean/CMakeFiles/indus_verifier.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-clean/CMakeFiles/indus_benchmark.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-clean/CMakeFiles/test.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-clean/CMakeFiles/edit_cache.dir
+/Users/yadnyesh8250/Desktop/VAJRA-OPT/build-clean/CMakeFiles/rebuild_cache.dir

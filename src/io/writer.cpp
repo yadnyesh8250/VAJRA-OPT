@@ -1,6 +1,7 @@
 #include "indus/io.hpp"
 #include <fstream>
 #include <iomanip>
+#include <sstream>
 #include <stdexcept>
 
 namespace indus::io {
@@ -33,6 +34,46 @@ std::string basis_status_to_str(BasisStatus bs) {
         case BasisStatus::kNonbasicFree: return "FREE";
         default: return "UNKNOWN";
     }
+}
+
+// Produce a safe JSON string (no surrounding quotes added here).
+std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 4);
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (c < 0x20u) {
+                    // other control characters as \uXXXX
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out += static_cast<char>(c);
+                }
+                break;
+        }
+    }
+    return out;
+}
+
+// Get column name with automatic fallback for unnamed models.
+std::string col_name(const Model& model, int j) {
+    const auto idx = static_cast<size_t>(j);
+    if (idx < model.col_names.size()) return model.col_names[idx];
+    return "c" + std::to_string(j);
+}
+
+// Get row name with automatic fallback for unnamed models.
+std::string row_name(const Model& model, int i) {
+    const auto idx = static_cast<size_t>(i);
+    if (idx < model.row_names.size()) return model.row_names[idx];
+    return "r" + std::to_string(i);
 }
 
 } // namespace
@@ -69,26 +110,26 @@ void write_solution(const Solution& solution, const Model& model, const std::str
 
     file << "# Columns (Variables)\n";
     file << "# Name  Value  ReducedCost  Status\n";
-    const size_t num_cols = model.col_names.size();
-    for (size_t j = 0; j < num_cols; ++j) {
-        const std::string& name = model.col_names[j];
-        const double val = (j < solution.col_value.size()) ? solution.col_value[j] : 0.0;
-        const double red_cost = (j < solution.col_dual.size()) ? solution.col_dual[j] : 0.0;
-        const std::string bstat = (j < solution.col_basis_status.size())
-                                      ? basis_status_to_str(solution.col_basis_status[j])
+    for (int j = 0; j < model.num_cols; ++j) {
+        const std::string name = col_name(model, j);
+        const size_t idx = static_cast<size_t>(j);
+        const double val = (idx < solution.col_value.size()) ? solution.col_value[idx] : 0.0;
+        const double red_cost = (idx < solution.col_dual.size()) ? solution.col_dual[idx] : 0.0;
+        const std::string bstat = (idx < solution.col_basis_status.size())
+                                      ? basis_status_to_str(solution.col_basis_status[idx])
                                       : "UNKNOWN";
         file << name << " " << val << " " << red_cost << " " << bstat << "\n";
     }
 
     file << "\n# Rows (Constraints)\n";
     file << "# Name  Activity  DualMultiplier  Status\n";
-    const size_t num_rows = model.row_names.size();
-    for (size_t i = 0; i < num_rows; ++i) {
-        const std::string& name = model.row_names[i];
-        const double val = (i < solution.row_value.size()) ? solution.row_value[i] : 0.0;
-        const double dual = (i < solution.row_dual.size()) ? solution.row_dual[i] : 0.0;
-        const std::string bstat = (i < solution.row_basis_status.size())
-                                      ? basis_status_to_str(solution.row_basis_status[i])
+    for (int i = 0; i < model.num_rows; ++i) {
+        const std::string name = row_name(model, i);
+        const size_t idx = static_cast<size_t>(i);
+        const double val = (idx < solution.row_value.size()) ? solution.row_value[idx] : 0.0;
+        const double dual = (idx < solution.row_dual.size()) ? solution.row_dual[idx] : 0.0;
+        const std::string bstat = (idx < solution.row_basis_status.size())
+                                      ? basis_status_to_str(solution.row_basis_status[idx])
                                       : "UNKNOWN";
         file << name << " " << val << " " << dual << " " << bstat << "\n";
     }
@@ -111,14 +152,14 @@ void write_json(const Solution& solution, const Model& model, const std::string&
     file << std::setprecision(17);
 
     file << "{\n";
-    file << "  \"model_name\": \"" << (model.name.empty() ? "unnamed" : model.name) << "\",\n";
+    file << "  \"model_name\": \"" << json_escape(model.name.empty() ? "unnamed" : model.name) << "\",\n";
     file << "  \"num_rows\": " << model.num_rows << ",\n";
     file << "  \"num_cols\": " << model.num_cols << ",\n";
     file << "  \"num_nonzeros\": " << model.A.nnz() << ",\n";
-    file << "  \"algorithm\": \"" << solution.algorithm_used << "\",\n";
-    file << "  \"git_commit\": \"" << INDUS_GIT_COMMIT << "\",\n";
+    file << "  \"algorithm\": \"" << json_escape(solution.algorithm_used) << "\",\n";
+    file << "  \"git_commit\": \"" << json_escape(INDUS_GIT_COMMIT) << "\",\n";
     file << "  \"status\": \"" << status_to_str(solution.status) << "\",\n";
-    file << "  \"status_message\": \"" << solution.status_message << "\",\n";
+    file << "  \"status_message\": \"" << json_escape(solution.status_message) << "\",\n";
     file << "  \"objective_value\": " << solution.objective_value << ",\n";
     file << "  \"best_dual_bound\": " << solution.best_dual_bound << ",\n";
     file << "  \"relative_gap\": " << solution.relative_gap << ",\n";
@@ -143,7 +184,7 @@ void write_json(const Solution& solution, const Model& model, const std::string&
     file << "  },\n";
 
     file << "  \"certificate\": {\n";
-    file << "    \"type\": \"" << solution.certificate_type << "\",\n";
+    file << "    \"type\": \"" << json_escape(solution.certificate_type) << "\",\n";
     file << "    \"values\": [";
     for (size_t k = 0; k < solution.certificate_vector.size(); ++k) {
         file << solution.certificate_vector[k];
@@ -153,33 +194,33 @@ void write_json(const Solution& solution, const Model& model, const std::string&
     file << "  },\n";
 
     file << "  \"variables\": [\n";
-    const size_t num_cols = model.col_names.size();
-    for (size_t j = 0; j < num_cols; ++j) {
-        const std::string& name = model.col_names[j];
-        const double val = (j < solution.col_value.size()) ? solution.col_value[j] : 0.0;
-        const double red_cost = (j < solution.col_dual.size()) ? solution.col_dual[j] : 0.0;
-        const std::string bstat = (j < solution.col_basis_status.size())
-                                      ? basis_status_to_str(solution.col_basis_status[j])
+    for (int j = 0; j < model.num_cols; ++j) {
+        const std::string name = col_name(model, j);
+        const size_t idx = static_cast<size_t>(j);
+        const double val = (idx < solution.col_value.size()) ? solution.col_value[idx] : 0.0;
+        const double red_cost = (idx < solution.col_dual.size()) ? solution.col_dual[idx] : 0.0;
+        const std::string bstat = (idx < solution.col_basis_status.size())
+                                      ? basis_status_to_str(solution.col_basis_status[idx])
                                       : "UNKNOWN";
-        file << "    {\"name\": \"" << name << "\", \"value\": " << val
+        file << "    {\"name\": \"" << json_escape(name) << "\", \"value\": " << val
              << ", \"reduced_cost\": " << red_cost << ", \"status\": \"" << bstat << "\"}";
-        if (j + 1 < num_cols) file << ",";
+        if (j + 1 < model.num_cols) file << ",";
         file << "\n";
     }
     file << "  ],\n";
 
     file << "  \"constraints\": [\n";
-    const size_t num_rows = model.row_names.size();
-    for (size_t i = 0; i < num_rows; ++i) {
-        const std::string& name = model.row_names[i];
-        const double val = (i < solution.row_value.size()) ? solution.row_value[i] : 0.0;
-        const double dual = (i < solution.row_dual.size()) ? solution.row_dual[i] : 0.0;
-        const std::string bstat = (i < solution.row_basis_status.size())
-                                      ? basis_status_to_str(solution.row_basis_status[i])
+    for (int i = 0; i < model.num_rows; ++i) {
+        const std::string name = row_name(model, i);
+        const size_t idx = static_cast<size_t>(i);
+        const double val = (idx < solution.row_value.size()) ? solution.row_value[idx] : 0.0;
+        const double dual = (idx < solution.row_dual.size()) ? solution.row_dual[idx] : 0.0;
+        const std::string bstat = (idx < solution.row_basis_status.size())
+                                      ? basis_status_to_str(solution.row_basis_status[idx])
                                       : "UNKNOWN";
-        file << "    {\"name\": \"" << name << "\", \"activity\": " << val
+        file << "    {\"name\": \"" << json_escape(name) << "\", \"activity\": " << val
              << ", \"dual\": " << dual << ", \"status\": \"" << bstat << "\"}";
-        if (i + 1 < num_rows) file << ",";
+        if (i + 1 < model.num_rows) file << ",";
         file << "\n";
     }
     file << "  ]\n";

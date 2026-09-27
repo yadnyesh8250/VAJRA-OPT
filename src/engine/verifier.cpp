@@ -32,6 +32,20 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
     const int n = model.num_cols;
     const int m = model.num_rows;
 
+    auto get_row_name = [&](int i) -> std::string {
+        if (static_cast<size_t>(i) < model.row_names.size() && !model.row_names[static_cast<size_t>(i)].empty()) {
+            return model.row_names[static_cast<size_t>(i)];
+        }
+        return "r" + std::to_string(i);
+    };
+
+    auto get_col_name = [&](int j) -> std::string {
+        if (static_cast<size_t>(j) < model.col_names.size() && !model.col_names[static_cast<size_t>(j)].empty()) {
+            return model.col_names[static_cast<size_t>(j)];
+        }
+        return "c" + std::to_string(j);
+    };
+
     if (static_cast<int>(solution.col_value.size()) != n) {
         res.violations.push_back("Primal solution vector size (" + std::to_string(solution.col_value.size()) +
                                  ") does not match model num_cols (" + std::to_string(n) + ")");
@@ -44,7 +58,7 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
     for (int j = 0; j < n; ++j) {
         const double xj = solution.col_value[static_cast<size_t>(j)];
         if (std::isnan(xj) || std::isinf(xj)) {
-            res.violations.push_back("Variable " + model.col_names[static_cast<size_t>(j)] + " is NaN or Inf");
+            res.violations.push_back("Variable " + get_col_name(j) + " is NaN or Inf");
         }
     }
     if (std::isnan(solution.objective_value) || std::isinf(solution.objective_value)) {
@@ -60,13 +74,13 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
         if (xj < lj - tol) {
             const double viol = lj - xj;
             res.max_bound_violation = std::max(res.max_bound_violation, viol);
-            res.violations.push_back("Variable " + model.col_names[static_cast<size_t>(j)] +
+            res.violations.push_back("Variable " + get_col_name(j) +
                                      " below lower bound: " + std::to_string(xj) + " < " + std::to_string(lj));
         }
         if (xj > uj + tol) {
             const double viol = xj - uj;
             res.max_bound_violation = std::max(res.max_bound_violation, viol);
-            res.violations.push_back("Variable " + model.col_names[static_cast<size_t>(j)] +
+            res.violations.push_back("Variable " + get_col_name(j) +
                                      " above upper bound: " + std::to_string(xj) + " > " + std::to_string(uj));
         }
     }
@@ -84,13 +98,13 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
         if (ax < li - tol) {
             const double viol = li - ax;
             res.max_row_violation = std::max(res.max_row_violation, viol);
-            res.violations.push_back("Row " + model.row_names[static_cast<size_t>(i)] +
+            res.violations.push_back("Row " + get_row_name(i) +
                                      " below lower bound: " + std::to_string(ax) + " < " + std::to_string(li));
         }
         if (ax > ui + tol) {
             const double viol = ax - ui;
             res.max_row_violation = std::max(res.max_row_violation, viol);
-            res.violations.push_back("Row " + model.row_names[static_cast<size_t>(i)] +
+            res.violations.push_back("Row " + get_row_name(i) +
                                      " above upper bound: " + std::to_string(ax) + " > " + std::to_string(ui));
         }
     }
@@ -159,14 +173,14 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
                 // <= row: yi <= 0
                 if (yi > tol) {
                     res.max_dual_violation = std::max(res.max_dual_violation, yi);
-                    res.violations.push_back("Row " + model.row_names[static_cast<size_t>(i)] +
+                    res.violations.push_back("Row " + get_row_name(i) +
                                              " (<= row) has positive dual multiplier yi: " + std::to_string(yi));
                 }
             } else if (li > -1e20 && ui >= 1e20) {
                 // >= row: yi >= 0
                 if (yi < -tol) {
                     res.max_dual_violation = std::max(res.max_dual_violation, -yi);
-                    res.violations.push_back("Row " + model.row_names[static_cast<size_t>(i)] +
+                    res.violations.push_back("Row " + get_row_name(i) +
                                              " (>= row) has negative dual multiplier yi: " + std::to_string(yi));
                 }
             }

@@ -14,18 +14,32 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
     const int m = orig.num_rows;
     const int n = orig.num_cols;
 
+    auto get_row_name = [&](int i) -> std::string {
+        if (static_cast<size_t>(i) < orig.row_names.size() && !orig.row_names[static_cast<size_t>(i)].empty()) {
+            return orig.row_names[static_cast<size_t>(i)];
+        }
+        return "r" + std::to_string(i);
+    };
+
+    auto get_col_name = [&](int j) -> std::string {
+        if (static_cast<size_t>(j) < orig.col_names.size() && !orig.col_names[static_cast<size_t>(j)].empty()) {
+            return orig.col_names[static_cast<size_t>(j)];
+        }
+        return "c" + std::to_string(j);
+    };
+
     // 0. Crossed-bound check on original model
     for (int j = 0; j < n; ++j) {
         if (orig.col_lower[static_cast<size_t>(j)] > orig.col_upper[static_cast<size_t>(j)] + tol::kZeroDrop) {
             res.is_infeasible = true;
-            res.status_message = "Crossed bounds on column " + orig.col_names[static_cast<size_t>(j)];
+            res.status_message = "Crossed bounds on column " + get_col_name(j);
             return res;
         }
     }
     for (int i = 0; i < m; ++i) {
         if (orig.row_lower[static_cast<size_t>(i)] > orig.row_upper[static_cast<size_t>(i)] + tol::kZeroDrop) {
             res.is_infeasible = true;
-            res.status_message = "Crossed bounds on row " + orig.row_names[static_cast<size_t>(i)];
+            res.status_message = "Crossed bounds on row " + get_row_name(i);
             return res;
         }
     }
@@ -74,7 +88,7 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
                 const double ui = row_upper[static_cast<size_t>(i)];
                 if (li > tol::kPrimalFeasibility || ui < -tol::kPrimalFeasibility) {
                     res.is_infeasible = true;
-                    res.status_message = "Empty row " + orig.row_names[static_cast<size_t>(i)] +
+                    res.status_message = "Empty row " + get_row_name(i) +
                                          " cannot be satisfied: [ " + std::to_string(li) + ", " +
                                          std::to_string(ui) + " ] does not contain 0";
                     return res;
@@ -83,7 +97,7 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
                 ReductionRecord rec;
                 rec.type = ReductionType::kEmptyRow;
                 rec.row_idx = i;
-                rec.name = orig.row_names[static_cast<size_t>(i)];
+                rec.name = get_row_name(i);
                 rec.row_lower = li;
                 rec.row_upper = ui;
                 res.stack.push(std::move(rec));
@@ -105,14 +119,14 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
                 if (cj > tol::kDualFeasibility) {
                     if (lj <= -1e19) {
                         res.is_unbounded = true;
-                        res.status_message = "Unbounded: empty column " + orig.col_names[static_cast<size_t>(j)] + " with positive cost has no lower bound";
+                        res.status_message = "Unbounded: empty column " + get_col_name(j) + " with positive cost has no lower bound";
                         return res;
                     }
                     fix_val = lj;
                 } else if (cj < -tol::kDualFeasibility) {
                     if (uj >= 1e19) {
                         res.is_unbounded = true;
-                        res.status_message = "Unbounded: empty column " + orig.col_names[static_cast<size_t>(j)] + " with negative cost has no upper bound";
+                        res.status_message = "Unbounded: empty column " + get_col_name(j) + " with negative cost has no upper bound";
                         return res;
                     }
                     fix_val = uj;
@@ -124,7 +138,7 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
                 ReductionRecord rec;
                 rec.type = ReductionType::kEmptyCol;
                 rec.col_idx = j;
-                rec.name = orig.col_names[static_cast<size_t>(j)];
+                rec.name = get_col_name(j);
                 rec.fixed_value = fix_val;
                 rec.obj_cost = cj;
                 res.stack.push(std::move(rec));
@@ -145,7 +159,7 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
                 ReductionRecord rec;
                 rec.type = ReductionType::kFixedCol;
                 rec.col_idx = j;
-                rec.name = orig.col_names[static_cast<size_t>(j)];
+                rec.name = get_col_name(j);
                 rec.fixed_value = fix_val;
                 rec.obj_cost = cj;
 
@@ -161,8 +175,8 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
 
                     if (row_lower[static_cast<size_t>(r)] > row_upper[static_cast<size_t>(r)] + tol::kZeroDrop) {
                         res.is_infeasible = true;
-                        res.status_message = "Fixed variable " + orig.col_names[static_cast<size_t>(j)] +
-                                             " created crossed bounds on row " + orig.row_names[static_cast<size_t>(r)];
+                        res.status_message = "Fixed variable " + get_col_name(j) +
+                                             " created crossed bounds on row " + get_row_name(r);
                         return res;
                     }
                 }
@@ -200,8 +214,8 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
 
                     if (new_lb > new_ub + tol::kZeroDrop) {
                         res.is_infeasible = true;
-                        res.status_message = "Singleton row " + orig.row_names[static_cast<size_t>(i)] +
-                                             " creates crossed bounds on column " + orig.col_names[static_cast<size_t>(j)];
+                        res.status_message = "Singleton row " + get_row_name(i) +
+                                             " creates crossed bounds on column " + get_col_name(j);
                         return res;
                     }
 
@@ -221,7 +235,7 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
                     rec.row_upper = ui;
                     rec.old_lower = old_lb;
                     rec.old_upper = old_ub;
-                    rec.name = orig.row_names[static_cast<size_t>(i)];
+                    rec.name = get_row_name(i);
                     res.stack.push(std::move(rec));
 
                     res.num_singleton_rows++;
@@ -256,12 +270,12 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
             // Infeasibility
             if (!L_inf && L_i > ui + tol::kPrimalFeasibility) {
                 res.is_infeasible = true;
-                res.status_message = "Minimum activity of row " + orig.row_names[static_cast<size_t>(i)] + " exceeds upper bound";
+                res.status_message = "Minimum activity of row " + get_row_name(i) + " exceeds upper bound";
                 return res;
             }
             if (!U_inf && U_i < li - tol::kPrimalFeasibility) {
                 res.is_infeasible = true;
-                res.status_message = "Maximum activity of row " + orig.row_names[static_cast<size_t>(i)] + " is below lower bound";
+                res.status_message = "Maximum activity of row " + get_row_name(i) + " is below lower bound";
                 return res;
             }
 
@@ -280,7 +294,7 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
                 ReductionRecord rec;
                 rec.type = ReductionType::kRedundantRow;
                 rec.row_idx = i;
-                rec.name = orig.row_names[static_cast<size_t>(i)];
+                rec.name = get_row_name(i);
                 // std::cout << "  [PRESOLVE] Redundant row: " << rec.name << " Li=" << L_i << " li=" << li << " Ui=" << U_i << " ui=" << ui << "\n";
                 res.stack.push(std::move(rec));
 
@@ -297,7 +311,7 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
                 ReductionRecord rec;
                 rec.type = ReductionType::kForcingRow;
                 rec.row_idx = i;
-                rec.name = orig.row_names[static_cast<size_t>(i)];
+                rec.name = get_row_name(i);
                 rec.row_lower = li;
                 rec.row_upper = ui;
 
@@ -352,7 +366,7 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
                     rec.coeff = a_ij;
                     rec.fixed_value = bi;
                     rec.obj_cost = cj;
-                    rec.name = orig.col_names[static_cast<size_t>(j)];
+                    rec.name = get_col_name(j);
 
                     obj_offset += cj * (bi / a_ij);
 
@@ -470,8 +484,8 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
 
                 if (new_keep_l > new_keep_u + tol::kZeroDrop) {
                     res.is_infeasible = true;
-                    res.status_message = "Doubleton row " + orig.row_names[static_cast<size_t>(i)] +
-                                         " creates crossed bounds on " + orig.col_names[static_cast<size_t>(keep_col)];
+                    res.status_message = "Doubleton row " + get_row_name(i) +
+                                         " creates crossed bounds on " + get_col_name(keep_col);
                     return res;
                 }
 
@@ -489,7 +503,7 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
                 rec.obj_cost = cost[static_cast<size_t>(elim_col)];
                 rec.old_lower = l_elim;
                 rec.old_upper = u_elim;
-                rec.name = orig.row_names[static_cast<size_t>(i)];
+                rec.name = get_row_name(i);
 
                 // Substitute in objective:
                 // cost[elim] * x_elim = cost[elim] * (b / a_elim - (a_keep / a_elim) * x_keep)
@@ -519,7 +533,7 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
 
                     if (row_lower[static_cast<size_t>(r)] > row_upper[static_cast<size_t>(r)] + tol::kZeroDrop) {
                         crossed_row_bounds = true;
-                        crossed_row_name = orig.row_names[static_cast<size_t>(r)];
+                        crossed_row_name = get_row_name(r);
                     }
 
                     const double delta = -a_r_elim * (a_keep / a_elim);
@@ -601,7 +615,7 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
         red_model.c[static_cast<size_t>(rj)] = cost[static_cast<size_t>(oj)];
         red_model.col_lower[static_cast<size_t>(rj)] = col_lower[static_cast<size_t>(oj)];
         red_model.col_upper[static_cast<size_t>(rj)] = col_upper[static_cast<size_t>(oj)];
-        red_model.col_names[static_cast<size_t>(rj)] = orig.col_names[static_cast<size_t>(oj)];
+        red_model.col_names[static_cast<size_t>(rj)] = get_col_name(oj);
     }
 
     red_model.row_lower.resize(static_cast<size_t>(red_m));
@@ -612,7 +626,7 @@ PresolveResult PresolveEngine::apply(const Model& orig, int max_passes) {
         const int oi = red_to_orig_row[static_cast<size_t>(ri)];
         red_model.row_lower[static_cast<size_t>(ri)] = row_lower[static_cast<size_t>(oi)];
         red_model.row_upper[static_cast<size_t>(ri)] = row_upper[static_cast<size_t>(oi)];
-        red_model.row_names[static_cast<size_t>(ri)] = orig.row_names[static_cast<size_t>(oi)];
+        red_model.row_names[static_cast<size_t>(ri)] = get_row_name(oi);
     }
 
     // Assemble reduced constraint matrix A

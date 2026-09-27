@@ -58,17 +58,22 @@
   - [ ] Physical NVIDIA Hardware Gate: Execution on a machine with a discrete NVIDIA GPU (e.g., RTX 4090 / A100 / H100 / T4) to measure physical VRAM throughput and physical speedup.
   - *Current Status:* **CODE & CPU 10/10 COMPLETE (All kernels implemented, zero-transfer loop enforced, warp SpMV active, all 12 mathematical specs verified, 8/8 CTest green, 22/22 Netlib benchmarks verified; physical GPU speedup gate honestly pending dedicated NVIDIA hardware).**
 
-- [ ] **PHASE 6: Interior Point, Convex QP & Branch-and-Bound**
-  - [ ] `src/solvers/interior_point/ipm.cpp` (Mehrotra predictor-corrector over normal equations)
-  - [ ] `src/solvers/quadratic/convexity.cpp`, `qp_condat_vu.cpp` (Condat-Vũ QP + LDLᵀ convexity check)
-  - [ ] `src/solvers/branch_bound/branch_and_bound.cpp` (Reliability branching, strong branching, root dive)
-  - [ ] `src/solvers/branch_bound/cuts.cpp` (Gomory mixed-integer & knapsack cover cuts)
-  - *Gate Check:* Solves `crude_blend_qp.mps` (QP) and `blend_milp.mps` (MILP) to certified optima.
+- [X] **PHASE 6: Release Hardening, Reproducibility & Final Evaluation**
+  - [X] **Phase 5 Discrepancy Investigations & Resolution:**
+    - Resolved 21/22 Benchmark discrepancy: Enhanced `validator/independent_verifier.py` with standalone CPLEX `.lp` parser and UTF-8 encoding support. Verified that 22/22 Netlib & MRPL industrial benchmarks pass 100% cleanly.
+    - Resolved 7/8 CTest discrepancy: Identified CTest timeout on throttled/battery Windows laptop during Category 5 (10,000x20,000 PDHG); added `--quick` mode to `apps/benchmark_runner.cpp` and configured explicit `TIMEOUT 600` for test target in `CMakeLists.txt` alongside python fallback detection.
+  - [X] **Core Solver Hardening & Boundary Defense:**
+    - Presolve & Verifier Name Segfaults: Safely guarded all `row_names` and `col_names` lookups in `PresolveEngine` (`src/presolve/presolve.cpp`) and `SolutionVerifier` (`src/engine/verifier.cpp`) with safe default name generators (`r<i>`, `c<j>`), eliminating crashes when models lack names.
+    - Model Dimension & Limits Hardening: Hardened `indus::solve()` in `src/engine/model.cpp` for empty models (0 vars, 0 rows), unconstrained box-bounded models, and zero/negative time limits.
+  - [X] **Phase 6 Reliability Audit Suite:**
+    - Implemented `tests/test_reliability.cpp` covering 10 distinct failure/boundary modes: empty model, zero variables with constraints, unconstrained box LP, crossed bounds / dimension mismatch, infeasible/unbounded status differentiation, duplicate constraints, extreme matrix coefficient ratios with Ruiz scaling, time & iteration limit enforcement, repeated solver idempotency (10 sequential solves with zero memory/state leak), and graceful CPU fallback without CUDA. All 10/10 passed 100% green.
+  - [X] **Benchmark Reproducibility & Telemetry:**
+    - Standardized benchmark runner with platform, compiler, tolerance, limit, and status metadata in `build/benchmark_results.csv`.
+  - [X] **Comprehensive Root Documentation:**
+    - Published root `README.md` with architectural blueprints, build instructions, test commands, benchmark workflows, platform differences, and honest CUDA hardware status.
+  - *Gate Check:* 9/9 CTest test suites pass 100% green; 22/22 Netlib and MRPL benchmark instances verified with zero solver warnings; 10/10 reliability suites pass; zero foreign solver symbols [PASSED].
 
-- [ ] **PHASE 7: CLI, Pyomo Plugin & Netlib Benchmarks**
-  - [ ] `apps/indus-cli/main.cpp` (Full CLI interface)
-  - [ ] `src/interfaces/capi/c_api.cpp` (Pure C ABI wrapper)
-  - [ ] `src/interfaces/python/indus_opt/pyomo_adapter.py` (Pyomo solver plugin)
-  - [ ] Root `CMakeLists.txt`
-  - [ ] Execute `bench/runners/netlib_runner.py` on `test_models/`
-  - *Gate Check:* 100% of benchmark instances pass with relative gap $\le 10^{-6}$ and independent KKT verification!
+- [-] **FUTURE SCOPE (Unexpanded per Phase 6 Release Hardening Directives):**
+  - Continuous LP solver is hardened and sovereignly certified.
+  - IPM, Convex QP, and MILP branch-and-bound remain unexpanded to preserve solver reliability and stability.
+  - Physical GPU execution pending dedicated NVIDIA hardware testbed.

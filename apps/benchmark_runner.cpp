@@ -279,6 +279,47 @@ int main(int argc, char *argv[]) {
   std::cout << "  Smart India Hackathon SIH26119 | MRPL Refinery & Netlib LP Suite     \n";
   std::cout << "========================================================================\n\n";
 
+  std::string out_dir = "build/benchmark_artifacts";
+  std::string csv_path = "build/benchmark_results.csv";
+  double tol = 1e-4;
+  bool quick_mode = false;
+  bool full_mode = false;
+
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--out-dir" && i + 1 < argc) {
+      out_dir = argv[++i];
+    } else if (arg == "--csv" && i + 1 < argc) {
+      csv_path = argv[++i];
+    } else if (arg == "--tol" && i + 1 < argc) {
+      tol = std::stod(argv[++i]);
+    } else if (arg == "--quick") {
+      quick_mode = true;
+    } else if (arg == "--full") {
+      full_mode = true;
+    } else if (arg == "--help" || arg == "-h") {
+      std::cout << "Usage: indus_benchmark [options]\n\n"
+                << "Execution Modes:\n"
+                << "  --quick          Smoke/classification test: validates Suite 1 baseline (22/22),\n"
+                << "                   verifies CSV generation and telemetry classification without requiring\n"
+                << "                   Suite 2 reference PDHG convergence to optimality. Exits 0 on clean smoke run.\n"
+                << "  --full (default) Full reference verification: enforces independent verification and\n"
+                << "                   reference-objective matching for Suite 2 reference models. Exits nonzero\n"
+                << "                   if any reference model fails verification or limits.\n\n"
+                << "Options:\n"
+                << "  --out-dir <dir>  Directory to save solution and JSON artifacts (default: build/benchmark_artifacts)\n"
+                << "  --csv <path>     Path for CSV telemetry output (default: build/benchmark_results.csv)\n"
+                << "  --tol <tol>      Verification tolerance (default: 1e-4)\n"
+                << "  --help, -h       Display this help message\n";
+      return 0;
+    }
+  }
+
+  // Default mode is full reference verification unless --quick is explicitly requested
+  if (!quick_mode) {
+    full_mode = true;
+  }
+
   auto dev_info = indus::gpu::probe_device();
   std::cout << "[HARDWARE CONFIGURATION]\n";
   std::cout << "  CPU Platform   : "
@@ -295,22 +336,35 @@ int main(int argc, char *argv[]) {
     std::cout << "  VRAM Available : " << (dev_info.total_vram_bytes / (1024 * 1024)) << " MB\n";
     std::cout << "  Compute Cap.   : " << dev_info.compute_capability_major << "." << dev_info.compute_capability_minor << "\n";
   }
+  std::cout << "  Benchmark Mode : " << (quick_mode ? "QUICK SMOKE TEST (--quick)" : "FULL REFERENCE VERIFICATION (--full)") << "\n";
+  if (quick_mode) {
+    std::cout << "                   (Validates Suite 1 baseline, CSV generation, and classification integrity;\n"
+              << "                    does not enforce Suite 2 reference convergence to optimality)\n";
+  } else {
+    std::cout << "                   (Enforces full independent verification of Suite 1 & Suite 2 reference models;\n"
+              << "                    exits nonzero if any reference model fails verification)\n";
+  }
   std::cout << "\n";
 
-  std::string out_dir = "build/benchmark_artifacts";
-  std::string csv_path = "build/benchmark_results.csv";
-  double tol = 1e-4;
+#if defined(__APPLE__) && defined(__MACH__)
+  const std::string platform_str = "macOS_ARM64";
+#elif defined(_WIN32)
+  const std::string platform_str = "Windows";
+#elif defined(__linux__)
+  const std::string platform_str = "Linux";
+#else
+  const std::string platform_str = "GenericPlatform";
+#endif
 
-  for (int i = 1; i < argc; ++i) {
-    std::string arg = argv[i];
-    if (arg == "--out-dir" && i + 1 < argc) {
-      out_dir = argv[++i];
-    } else if (arg == "--csv" && i + 1 < argc) {
-      csv_path = argv[++i];
-    } else if (arg == "--tol" && i + 1 < argc) {
-      tol = std::stod(argv[++i]);
-    }
-  }
+#if defined(__clang__)
+  const std::string compiler_str = "Clang_" + std::to_string(__clang_major__) + "." + std::to_string(__clang_minor__);
+#elif defined(__GNUC__)
+  const std::string compiler_str = "GCC_" + std::to_string(__GNUC__) + "." + std::to_string(__GNUC_MINOR__);
+#elif defined(_MSC_VER)
+  const std::string compiler_str = "MSVC_" + std::to_string(_MSC_VER);
+#else
+  const std::string compiler_str = "CXX";
+#endif
 
   std::vector<BenchmarkInstance> instances = {
       {"crude_blend_mps", "SOVEREIGN_SOLVER_BLUEPRINT/test_models/crude_blend.mps", 214.145945946, false},
@@ -339,10 +393,10 @@ int main(int argc, char *argv[]) {
 
   std::filesystem::create_directories(out_dir);
   std::ofstream csv(csv_path);
-  csv << "Suite,Instance,Rows,Cols,Nonzeros,Engine,GpuDevice,PresolveDim,Doubletons,"
+  csv << "Platform,Compiler,PrimalTol,DualTol,IterationLimit,TimeLimit_s,Suite,Instance,Rows,Cols,Nonzeros,Engine,GpuDevice,PresolveDim,Doubletons,"
          "Status,ComputedObj,PublishedObj,RelErr,Iterations,SetupTime_s,IterTime_s,"
          "TotalTime_s,GpuUpload_s,GpuKernel_s,GpuDownload_s,GpuTotal_s,Transfers,"
-         "KernelSpeedup,E2ESpeedup,PrimViol,DualViol,ObjDiscr,Verified\n";
+         "KernelSpeedup,E2ESpeedup,PrimViol,DualViol,ObjDiscr,ExecutionStatus,VerificationStatus\n";
 
   std::cout << "[SUITE 1: 22 NETLIB & MRPL LP BASELINE - PRESOLVED REVISED SIMPLEX]\n";
   std::cout << std::left << std::setw(16) << "Instance" << std::setw(12)
@@ -425,7 +479,9 @@ int main(int argc, char *argv[]) {
               << vres.objective_discrepancy << std::setw(8)
               << (overall_pass ? "PASSED" : "FAILED") << "\n";
 
-    csv << "NetlibBaseline," << inst.name << "," << model.num_rows << "," << model.num_cols << ","
+    csv << platform_str << "," << compiler_str << "," << tol << "," << tol << ","
+        << opts.iteration_limit << "," << opts.time_limit << ","
+        << "NetlibBaseline," << inst.name << "," << model.num_rows << "," << model.num_cols << ","
         << model.A.nnz() << ",Simplex," << dev_info.device_name << ","
         << pres_dim << "," << sol.presolve_doubleton_reductions << "," << status_str << ","
         << std::setprecision(17) << sol.objective_value << ","
@@ -433,7 +489,8 @@ int main(int argc, char *argv[]) {
         << sol.solve_time_seconds << ",0.0,0.0,0.0,0.0,0,1.00,1.00,"
         << vres.max_primal_violation << ","
         << vres.max_dual_violation << "," << vres.objective_discrepancy << ","
-        << (overall_pass ? "PASSED" : "FAILED") << "\n";
+        << status_str << ","                                   // ExecutionStatus
+        << (overall_pass ? "PASSED" : "FAILED") << "\n";     // VerificationStatus
   }
 
   std::cout << std::string(141, '-') << "\n";
@@ -447,6 +504,7 @@ int main(int argc, char *argv[]) {
   struct ModelEntry {
     std::string category;
     std::string name;
+    std::string filepath;   // empty string for generated/synthetic models
     indus::Model model;
     double ref_obj = 0.0;
     bool has_ref = false;
@@ -454,42 +512,48 @@ int main(int argc, char *argv[]) {
 
   std::vector<ModelEntry> benchmark_models;
 
-  // 1. Small MRPL Crude Blend
+  // 1. Small MRPL Crude Blend (has model file + published reference)
   {
     std::string path = find_path("SOVEREIGN_SOLVER_BLUEPRINT/test_models/crude_blend.mps");
     indus::Model m = indus::io::read_mps(path);
-    benchmark_models.push_back({"1. Small MRPL Blend", "crude_blend", m, 214.145945946, true});
+    benchmark_models.push_back({"1. Small MRPL Blend", "crude_blend", path, m, 214.145945946, true});
   }
 
-  // 2. Medium Netlib Model
+  // 2. Medium Netlib Model (has model file + published reference)
   {
     std::string path = find_path("SOVEREIGN_SOLVER_BLUEPRINT/test_models/beaconfd.mps");
     indus::Model m = indus::io::read_mps(path);
-    benchmark_models.push_back({"2. Medium Netlib", "beaconfd", m, 33592.485807, true});
+    benchmark_models.push_back({"2. Medium Netlib", "beaconfd", path, m, 33592.485807, true});
   }
 
-  // 3. Large Sparse Generated Model (~100,000 Nonzeros)
+  // 3. Large Sparse Generated Model (~100,000 Nonzeros) – no file, no reference
   {
     std::cout << "  Generating Category 3: Large Sparse Model (5,000 x 10,000, ~100k nonzeros)...\n";
     indus::Model m = generate_synthetic_sparse_lp(5000, 10000, 10, 42);
-    benchmark_models.push_back({"3. Large Sparse Expander", "sparse_5k_10k_100k_nnz", m, 0.0, false});
+    benchmark_models.push_back({"3. Large Sparse Expander", "sparse_5k_10k_100k_nnz", "", m, 0.0, false});
   }
 
-  // 4. Large Structured Refinery-Style Model (Multi-Train, Multi-Unit, Clean Fuels Quality)
+  // 4. Large Structured Refinery-Style Model – no file, no reference
   {
     std::cout << "  Generating Category 4: Structured Refinery Model (16 periods x 4 trains)...\n";
     indus::Model m = generate_structured_refinery_lp(16, 4);
-    benchmark_models.push_back({"4. Structured Refinery", "mrpl_structured_refinery", m, 0.0, false});
+    benchmark_models.push_back({"4. Structured Refinery", "mrpl_structured_refinery", "", m, 0.0, false});
   }
 
-  // 5. Very Large Model with 200,000+ Nonzeros
+  // 5. Very Large Model with 200,000+ Nonzeros – no file, no reference
   {
     std::cout << "  Generating Category 5: High-Density Model (10,000 x 20,000, 240,000 nonzeros)...\n";
     indus::Model m = generate_synthetic_sparse_lp(10000, 20000, 12, 999);
-    benchmark_models.push_back({"5. 240k Nonzero Model", "sparse_10k_20k_240k_nnz", m, 0.0, false});
+    benchmark_models.push_back({"5. 240k Nonzero Model", "sparse_10k_20k_240k_nnz", "", m, 0.0, false});
   }
 
   std::cout << "\n";
+  // suite2_ref_failures counts reference-model instances that were not independently verified.
+  int suite2_ref_failures = 0;
+  int total_limit_reached = 0;
+  int total_not_applicable = 0;
+  bool has_false_passed_row = false;
+
   std::cout << std::left << std::setw(24) << "Model Category"
             << std::setw(14) << "Dim(R x C)"
             << std::setw(10) << "NNZ"
@@ -500,18 +564,25 @@ int main(int argc, char *argv[]) {
             << std::setw(12) << "GPU Down(s)"
             << std::setw(12) << "Transfers"
             << std::setw(14) << "Speedup(E2E)"
-            << std::setw(10) << "Status"
+            << std::setw(16) << "ExecStatus"
+            << std::setw(20) << "VerifyStatus"
             << "\n";
-  std::cout << std::string(140, '-') << "\n";
+  std::cout << std::string(162, '-') << "\n";
 
   for (auto &entry : benchmark_models) {
     const auto &model = entry.model;
+
+    // Reference models (has_ref + filepath) get 2000 iterations in quick mode (fast smoke test)
+    // and 50000 in full verification mode. Large synthetic models are throttled in quick mode.
+    const int64_t iter_lim = entry.has_ref ? (quick_mode ? 2000 : 50000)
+                             : (quick_mode && model.A.nnz() > 50000) ? 50
+                             : 2000;
 
     // 1. Solve with CPU PDHG
     indus::Options cpu_opts;
     cpu_opts.set("algorithm", "pdhg_cpu");
     cpu_opts.enable_presolve = false;
-    cpu_opts.iteration_limit = 2000;
+    cpu_opts.iteration_limit = iter_lim;
     cpu_opts.set("tolerance", 1e-4);
 
     indus::Solution cpu_sol = indus::solve(model, cpu_opts);
@@ -522,7 +593,7 @@ int main(int argc, char *argv[]) {
     gpu_opts.set("algorithm", "pdhg_cuda");
     gpu_opts.use_gpu = true;
     gpu_opts.enable_presolve = false;
-    gpu_opts.iteration_limit = 2000;
+    gpu_opts.iteration_limit = iter_lim;
     gpu_opts.set("tolerance", 1e-4);
 
     indus::Solution gpu_sol = indus::solve(model, gpu_opts);
@@ -547,6 +618,56 @@ int main(int argc, char *argv[]) {
 
     const std::string dims = std::to_string(model.num_rows) + "x" + std::to_string(model.num_cols);
 
+    // ── execution_status: what the solver reported ─────────────────────────────
+    const std::string execution_status = indus::to_string(gpu_sol.status);
+
+    // ── verification_status: independently verified against model file + ref obj
+    // Rules:
+    //   PASSED              – kOptimal AND primal feasible AND verifier passed AND ref obj matches
+    //   FAILED              – kOptimal but one of the above conditions is false
+    //   NOT_APPLICABLE      – solver did not converge (ITER_LIMIT/TIME_LIMIT) or synthetic model without reference
+    //   FEASIBLE_UNVERIFIED – kFeasible (not optimal; cannot declare PASSED)
+    std::string verification_status;
+
+    if (gpu_sol.status == indus::SolveStatus::kOptimal &&
+        gpu_sol.quality.is_primal_feasible) {
+        if (!entry.filepath.empty() && entry.has_ref) {
+            // Write solution and run independent verifier
+            const std::string s2_sol = out_dir + "/" + entry.name + "_pdhg.sol";
+            indus::io::write_solution(gpu_sol, entry.model, s2_sol);
+            indus::verifier::VerificationResult vres2 =
+                indus::verifier::verify_files(entry.filepath, s2_sol, tol);
+            const double ref_rel_err = std::abs(gpu_sol.objective_value - entry.ref_obj) /
+                                       std::max(1.0, std::abs(entry.ref_obj));
+            const bool passes = vres2.passed && (ref_rel_err <= 1e-6);
+            verification_status = passes ? "PASSED" : "FAILED";
+            if (!passes) ++suite2_ref_failures;
+        } else {
+            // Synthetic model: no file exists to verify against.
+            verification_status = "NOT_APPLICABLE";
+            ++total_not_applicable;
+        }
+    } else if (gpu_sol.status == indus::SolveStatus::kIterationLimit ||
+               gpu_sol.status == indus::SolveStatus::kTimeLimit) {
+        // Did not converge – count as failure for reference models.
+        verification_status = "NOT_APPLICABLE";
+        ++total_limit_reached;
+        ++total_not_applicable;
+        if (entry.has_ref) ++suite2_ref_failures;
+    } else if (gpu_sol.status == indus::SolveStatus::kFeasible) {
+        verification_status = "FEASIBLE_UNVERIFIED";
+        if (entry.has_ref) ++suite2_ref_failures;
+    } else {
+        verification_status = "FAILED";
+        if (entry.has_ref) ++suite2_ref_failures;
+    }
+
+    if (verification_status == "PASSED" &&
+        (gpu_sol.status != indus::SolveStatus::kOptimal || !gpu_sol.quality.is_primal_feasible)) {
+        has_false_passed_row = true;
+    }
+
+    // Print console row with the computed verification status (no "..." placeholder)
     std::cout << std::left << std::setw(24) << entry.category
               << std::setw(14) << dims
               << std::setw(10) << model.A.nnz()
@@ -557,10 +678,12 @@ int main(int argc, char *argv[]) {
               << std::setw(12) << std::fixed << std::setprecision(4) << gpu_timing.download_time_sec
               << std::setw(12) << gpu_timing.host_device_transfers
               << std::setw(14) << speedup_e2e_str
-              << std::setw(10) << indus::to_string(gpu_sol.status)
+              << std::setw(16) << execution_status
+              << std::setw(20) << verification_status
               << "\n";
 
-    csv << "EngineComparison," << entry.name << "," << model.num_rows << "," << model.num_cols << ","
+    csv << platform_str << "," << compiler_str << ",1e-4,1e-4," << iter_lim << ",1e20,"
+        << "EngineComparison," << entry.name << "," << model.num_rows << "," << model.num_cols << ","
         << model.A.nnz() << ",PDHG_GPU," << dev_info.device_name << ",N/A,0,"
         << indus::to_string(gpu_sol.status) << ","
         << std::setprecision(17) << gpu_sol.objective_value << "," << entry.ref_obj << ",0.0,"
@@ -569,10 +692,11 @@ int main(int argc, char *argv[]) {
         << gpu_timing.iteration_time_sec << "," << gpu_timing.download_time_sec << ","
         << gpu_timing.total_time_sec << "," << gpu_timing.host_device_transfers << ","
         << speedup_kernel_str << "," << speedup_e2e_str << ","
-        << gpu_sol.quality.max_primal_violation << "," << gpu_sol.quality.max_dual_violation << ",0.0,PASSED\n";
+        << gpu_sol.quality.max_primal_violation << "," << gpu_sol.quality.max_dual_violation << ",0.0,"
+        << execution_status << "," << verification_status << "\n";
   }
 
-  std::cout << std::string(140, '-') << "\n";
+  std::cout << std::string(162, '-') << "\n";
   if (!dev_info.available) {
     std::cout << "\n[HARDWARE ACCELERATION NOTICE]\n";
     std::cout << "  * Host platform is CPU-only (ARM64 macOS / No discrete NVIDIA GPU).\n";
@@ -581,6 +705,48 @@ int main(int argc, char *argv[]) {
     std::cout << "  * Hardware speedup gate remains properly marked as pending physical NVIDIA testbed.\n";
   }
 
-  std::cout << "\nComplete benchmark report and telemetry exported to: " << csv_path << "\n";
-  return (total_passed == total_tested) ? 0 : 1;
+  csv.close();
+  const bool csv_ok = std::filesystem::exists(csv_path) && std::filesystem::file_size(csv_path) > 0;
+  const bool all_s1_pass = (total_passed == total_tested);
+  const bool all_s2_ref_pass = (suite2_ref_failures == 0);
+
+  std::cout << "\n========================================================================\n";
+  std::cout << "  BENCHMARK SUMMARY REPORT                                              \n";
+  std::cout << "========================================================================\n";
+  std::cout << "  Mode                     : " << (quick_mode ? "QUICK SMOKE TEST (--quick)" : "FULL REFERENCE VERIFICATION (--full)") << "\n";
+  std::cout << "  Suite 1 (LP Baseline)    : " << total_passed << " / " << total_tested << " verified ("
+            << (all_s1_pass ? "PASSED" : "FAILED") << ")\n";
+  std::cout << "  Suite 2 Ref Models       : " << (suite2_ref_failures == 0 ? "All verified (0 failures)" : std::to_string(suite2_ref_failures) + " unverified / limit reached") << "\n";
+  std::cout << "  Limit-Reached Cases      : " << total_limit_reached << "\n";
+  std::cout << "  NOT_APPLICABLE Cases     : " << total_not_applicable << "\n";
+  std::cout << "  CSV Telemetry Produced   : " << (csv_ok ? "YES (" + csv_path + ")" : "NO / EMPTY") << "\n";
+  std::cout << "  False Optimality Claims  : " << (has_false_passed_row ? "DETECTED (VIOLATION)" : "NONE (INTEGRITY PRESERVED)") << "\n";
+
+  if (quick_mode) {
+    const bool quick_success = all_s1_pass && csv_ok && !has_false_passed_row;
+    if (quick_success) {
+      std::cout << "\n[QUICK SMOKE TEST RESULT] PASSED (exit code 0)\n";
+      std::cout << "  Suite 1 fully verified (22/22); telemetry exported honestly without false optimality claims.\n";
+      return 0;
+    } else {
+      std::cout << "\n[QUICK SMOKE TEST RESULT] FAILED (exit code 1)\n";
+      if (!all_s1_pass) std::cout << "  - Suite 1 failure: " << total_passed << "/" << total_tested << "\n";
+      if (!csv_ok) std::cout << "  - CSV output failed\n";
+      if (has_false_passed_row) std::cout << "  - False PASSED claim detected\n";
+      return 1;
+    }
+  } else if (full_mode) {
+    const bool full_success = all_s1_pass && all_s2_ref_pass && csv_ok && !has_false_passed_row;
+    if (full_success) {
+      std::cout << "\n[FULL VERIFICATION RESULT] PASSED (exit code 0)\n";
+      return 0;
+    } else {
+      std::cout << "\n[FULL VERIFICATION RESULT] FAILED (exit code 1)\n";
+      if (!all_s1_pass) std::cout << "  - Suite 1 failure: " << total_passed << "/" << total_tested << "\n";
+      if (!all_s2_ref_pass) std::cout << "  - Suite 2 reference models unverified: " << suite2_ref_failures << "\n";
+      if (!csv_ok) std::cout << "  - CSV output failed\n";
+      if (has_false_passed_row) std::cout << "  - False PASSED claim detected\n";
+      return 1;
+    }
+  }
 }

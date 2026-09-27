@@ -1,0 +1,10 @@
+test_linalg 2 0.329355
+test_simplex 2 0.229216
+test_io 2 0.264263
+test_regression 2 0.252539
+test_presolve 2 0.236791
+test_pdhg 2 0.273626
+test_benchmark 2 1.21725
+test_python_verifier 2 0.0176884
+test_reliability 1 0.465238
+---
