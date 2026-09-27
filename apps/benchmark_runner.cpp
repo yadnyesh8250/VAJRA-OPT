@@ -697,6 +697,137 @@ int main(int argc, char *argv[]) {
   }
 
   std::cout << std::string(162, '-') << "\n";
+  // =========================================================================
+  // SUITE 3: CONVEX QUADRATIC PROGRAMMING (QP) BENCHMARK
+  // =========================================================================
+  std::cout << "\n[SUITE 3: CONVEX QUADRATIC PROGRAMMING (QP) BENCHMARK]\n";
+  std::cout << "Models: 1. MRPL QP Blend | 2. Crude Blend QP | 3. Portfolio Allocation (100 Assets)\n\n";
+
+  struct QpModelEntry {
+    std::string name;
+    indus::Model model;
+    double ref_obj = 0.0;
+    bool has_ref = false;
+  };
+
+  std::vector<QpModelEntry> qp_models;
+  {
+    std::string path = find_path("SOVEREIGN_SOLVER_BLUEPRINT/test_models/qp_blend.mps");
+    if (std::filesystem::exists(path)) {
+      indus::Model m = indus::io::read_mps(path);
+      qp_models.push_back({"qp_blend", std::move(m), 66.666666667, true});
+    }
+  }
+  {
+    std::string path = find_path("SOVEREIGN_SOLVER_BLUEPRINT/test_models/crude_blend_qp.mps");
+    if (std::filesystem::exists(path)) {
+      indus::Model m = indus::io::read_mps(path);
+      qp_models.push_back({"crude_blend_qp", std::move(m), 179.91776118, true});
+    }
+  }
+  // 3. Synthetic Portfolio QP (100 assets, 1 budget row)
+  {
+    const int n_assets = 100;
+    indus::Model m;
+    m.name = "portfolio_qp_100";
+    m.num_cols = n_assets;
+    m.num_rows = 1;
+    m.sense = indus::ObjSense::kMinimize;
+    m.c.resize(static_cast<size_t>(n_assets));
+    for (int j = 0; j < n_assets; ++j) {
+      m.c[static_cast<size_t>(j)] = -0.05 - 0.001 * (j % 10); // Expected return
+    }
+    m.col_lower.assign(static_cast<size_t>(n_assets), 0.0);
+    m.col_upper.assign(static_cast<size_t>(n_assets), 1.0);
+    m.row_lower = {1.0};
+    m.row_upper = {1.0};
+    std::vector<indus::la::Triplet> a_triplets;
+    for (int j = 0; j < n_assets; ++j) {
+      a_triplets.push_back({0, j, 1.0});
+    }
+    m.A = indus::la::SparseMatrixCSC::from_triplets(1, n_assets, a_triplets);
+    std::vector<indus::la::Triplet> q_triplets;
+    for (int j = 0; j < n_assets; ++j) {
+      q_triplets.push_back({j, j, 0.1 * (1.0 + (j % 5))});
+      if (j + 1 < n_assets) {
+        q_triplets.push_back({j + 1, j, 0.01});
+        q_triplets.push_back({j, j + 1, 0.01});
+      }
+    }
+    m.Q = indus::la::SparseMatrixCSC::from_triplets(n_assets, n_assets, q_triplets);
+    qp_models.push_back({"portfolio_qp_100", std::move(m), 0.0, false});
+  }
+
+  std::cout << std::left << std::setw(20) << "Instance"
+            << std::setw(14) << "Dim(R x C)"
+            << std::setw(10) << "Q NNZ"
+            << std::setw(10) << "A NNZ"
+            << std::setw(18) << "Objective"
+            << std::setw(12) << "Time(s)"
+            << std::setw(8) << "Iter"
+            << std::setw(14) << "PrimViol"
+            << std::setw(14) << "StatRes"
+            << std::setw(14) << "CompViol"
+            << std::setw(18) << "ExecStatus"
+            << std::setw(20) << "VerifyStatus"
+            << "\n";
+  std::cout << std::string(172, '-') << "\n";
+
+  int qp_total = static_cast<int>(qp_models.size());
+  int qp_verified = 0;
+
+  for (auto &entry : qp_models) {
+    indus::Options opts;
+    opts.set("algorithm", "qp");
+    opts.iteration_limit = 100000;
+    opts.set("tolerance", 1e-6);
+
+    indus::Solution qp_sol = indus::solve(entry.model, opts);
+    indus::verifier::VerificationResult vres = indus::verifier::verify_solution(entry.model, qp_sol);
+
+    std::string exec_status = indus::to_string(qp_sol.status);
+    std::string verif_status = "FAILED";
+    if (qp_sol.status == indus::SolveStatus::kOptimal && vres.passed) {
+      verif_status = "OPTIMAL_VERIFIED";
+      qp_verified++;
+    } else if (qp_sol.status == indus::SolveStatus::kFeasible) {
+      verif_status = "FEASIBLE_UNVERIFIED";
+    } else if (qp_sol.status == indus::SolveStatus::kIterationLimit || qp_sol.status == indus::SolveStatus::kTimeLimit) {
+      verif_status = "LIMIT_REACHED";
+    } else if (qp_sol.status == indus::SolveStatus::kInfeasible && vres.passed) {
+      verif_status = "INFEASIBLE_VERIFIED";
+    } else if (qp_sol.status == indus::SolveStatus::kUnsupported) {
+      verif_status = "UNSUPPORTED";
+    }
+
+    std::string dim_str = std::to_string(entry.model.num_rows) + "x" + std::to_string(entry.model.num_cols);
+    std::cout << std::left << std::setw(20) << entry.name
+              << std::setw(14) << dim_str
+              << std::setw(10) << entry.model.Q.nnz()
+              << std::setw(10) << entry.model.A.nnz()
+              << std::setw(18) << std::setprecision(10) << qp_sol.objective_value
+              << std::setw(12) << std::setprecision(6) << qp_sol.solve_time_seconds
+              << std::setw(8) << qp_sol.iterations
+              << std::setw(14) << std::scientific << std::setprecision(2) << qp_sol.quality.max_primal_violation
+              << std::setw(14) << std::scientific << std::setprecision(2) << qp_sol.quality.max_stationarity_residual
+              << std::setw(14) << std::scientific << std::setprecision(2) << qp_sol.quality.max_complementarity_violation
+              << std::defaultfloat << std::setw(18) << exec_status
+              << std::setw(20) << verif_status
+              << "\n";
+
+    csv << platform_str << "," << compiler_str << ",1e-6,1e-6,100000,1e20,"
+        << "QP," << entry.name << "," << entry.model.num_rows << "," << entry.model.num_cols << ","
+        << entry.model.A.nnz() << ",ConvexQP_ActiveSet,N/A,N/A,0,"
+        << exec_status << ","
+        << std::setprecision(17) << qp_sol.objective_value << ","
+        << (entry.has_ref ? entry.ref_obj : 0.0) << ",0.0,"
+        << qp_sol.iterations << ",0.0,0.0,"
+        << qp_sol.solve_time_seconds << ",0.0,0.0,0.0,0.0,0,N/A,N/A,"
+        << qp_sol.quality.max_primal_violation << "," << qp_sol.quality.max_stationarity_residual << ",0.0,"
+        << exec_status << "," << verif_status << "\n";
+  }
+  std::cout << std::string(172, '-') << "\n";
+
   if (!dev_info.available) {
     std::cout << "\n[HARDWARE ACCELERATION NOTICE]\n";
     std::cout << "  * Host platform is CPU-only (ARM64 macOS / No discrete NVIDIA GPU).\n";
@@ -709,6 +840,7 @@ int main(int argc, char *argv[]) {
   const bool csv_ok = std::filesystem::exists(csv_path) && std::filesystem::file_size(csv_path) > 0;
   const bool all_s1_pass = (total_passed == total_tested);
   const bool all_s2_ref_pass = (suite2_ref_failures == 0);
+  const bool all_s3_pass = (qp_verified == qp_total);
 
   std::cout << "\n========================================================================\n";
   std::cout << "  BENCHMARK SUMMARY REPORT                                              \n";
@@ -717,13 +849,15 @@ int main(int argc, char *argv[]) {
   std::cout << "  Suite 1 (LP Baseline)    : " << total_passed << " / " << total_tested << " verified ("
             << (all_s1_pass ? "PASSED" : "FAILED") << ")\n";
   std::cout << "  Suite 2 Ref Models       : " << (suite2_ref_failures == 0 ? "All verified (0 failures)" : std::to_string(suite2_ref_failures) + " unverified / limit reached") << "\n";
+  std::cout << "  Suite 3 (Convex QP)      : " << qp_verified << " / " << qp_total << " verified ("
+            << (all_s3_pass ? "PASSED" : "FAILED") << ")\n";
   std::cout << "  Limit-Reached Cases      : " << total_limit_reached << "\n";
   std::cout << "  NOT_APPLICABLE Cases     : " << total_not_applicable << "\n";
   std::cout << "  CSV Telemetry Produced   : " << (csv_ok ? "YES (" + csv_path + ")" : "NO / EMPTY") << "\n";
   std::cout << "  False Optimality Claims  : " << (has_false_passed_row ? "DETECTED (VIOLATION)" : "NONE (INTEGRITY PRESERVED)") << "\n";
 
   if (quick_mode) {
-    const bool quick_success = all_s1_pass && csv_ok && !has_false_passed_row;
+    const bool quick_success = all_s1_pass && all_s3_pass && csv_ok && !has_false_passed_row;
     if (quick_success) {
       std::cout << "\n[QUICK SMOKE TEST RESULT] PASSED (exit code 0)\n";
       std::cout << "  Suite 1 fully verified (22/22); telemetry exported honestly without false optimality claims.\n";

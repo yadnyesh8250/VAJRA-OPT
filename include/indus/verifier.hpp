@@ -19,6 +19,11 @@ struct VerificationResult {
     bool optimality_proven = false;
     double mip_gap = 0.0;
 
+    bool is_qp = false;
+    bool is_convex = false;
+    std::string convexity_status;
+    double max_stationarity_residual = 0.0;
+
     double max_primal_violation = 0.0;
     double max_bound_violation = 0.0;
     double max_row_violation = 0.0;

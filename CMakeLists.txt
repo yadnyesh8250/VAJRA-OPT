@@ -55,6 +55,11 @@ set(MILP_SOURCES
     src/solvers/milp/milp_solver.cpp
 )
 
+# QP Active-Set sources
+set(QP_SOURCES
+    src/solvers/qp/qp_solver.cpp
+)
+
 # Optional NVIDIA CUDA compilation
 option(INDUS_ENABLE_CUDA "Enable NVIDIA CUDA GPU acceleration" OFF)
 
@@ -99,7 +104,7 @@ endif()
 add_compile_definitions(INDUS_GIT_COMMIT="${GIT_COMMIT_HASH}")
 
 # Library target
-add_library(indus_core STATIC ${LINALG_SOURCES} ${SIMPLEX_SOURCES} ${IO_SOURCES} ${PDHG_SOURCES} ${MILP_SOURCES})
+add_library(indus_core STATIC ${LINALG_SOURCES} ${SIMPLEX_SOURCES} ${IO_SOURCES} ${PDHG_SOURCES} ${MILP_SOURCES} ${QP_SOURCES})
 target_include_directories(indus_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -167,6 +172,11 @@ add_executable(test_milp tests/test_milp.cpp)
 target_link_libraries(test_milp PRIVATE indus_core)
 add_test(NAME test_milp COMMAND test_milp)
 set_tests_properties(test_milp PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_executable(test_qp tests/test_qp.cpp)
+target_link_libraries(test_qp PRIVATE indus_core)
+add_test(NAME test_qp COMMAND test_qp)
+set_tests_properties(test_qp PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
 if(INDUS_ENABLE_CUDA AND CMAKE_CUDA_COMPILER)
     add_executable(test_cuda_kernels tests/test_cuda_kernels.cu)

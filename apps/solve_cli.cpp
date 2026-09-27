@@ -1,6 +1,7 @@
 #include "indus/io.hpp"
 #include "indus/model.hpp"
 #include "indus/milp.hpp"
+#include "indus/qp.hpp"
 #include "indus/options.hpp"
 #include "indus/verifier.hpp"
 #include "indus/gpu.hpp"
@@ -29,7 +30,7 @@ void print_usage(const char* prog) {
               << "      --sol <file>          Export solution in .sol text format\n"
               << "      --json <file>         Export solution and telemetry in JSON format\n"
               << "  -a, --algorithm <algo>    Algorithm: auto, dual_simplex, primal_simplex,\n"
-              << "                            simplex, pdhg_cpu, pdhg_cuda, pdhg, milp (default: auto)\n"
+              << "                            simplex, pdhg_cpu, pdhg_cuda, pdhg, milp, qp (default: auto)\n"
               << "      --time-limit <sec>    Time limit in seconds (default: 1e20 / unlimited)\n"
               << "      --iter-limit <N>      Iteration limit (default: 1000000; 50000 for PDHG)\n"
               << "      --node-limit <N>      Node limit for MILP branch-and-bound (default: 500000)\n"
@@ -196,28 +197,62 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
-    const bool is_milp_problem = (model.has_integers() || algorithm == "milp");
-    int num_integers = 0;
-    int num_binaries = 0;
-    for (int j = 0; j < model.num_cols; ++j) {
-        if (model.col_type.size() > static_cast<size_t>(j) &&
-            model.col_type[static_cast<size_t>(j)] == indus::VarType::kInteger) {
-            num_integers++;
-            if (model.col_lower[static_cast<size_t>(j)] >= 0.0 && model.col_upper[static_cast<size_t>(j)] <= 1.0) {
-                num_binaries++;
-            }
-        }
+    const auto pclass = model.classify();
+    const bool is_miqp_problem = (pclass == indus::ProblemClass::kMiqp);
+    const bool is_qp_problem = (pclass == indus::ProblemClass::kQp || algorithm == "qp");
+    const bool is_milp_problem = (pclass == indus::ProblemClass::kMilp || (algorithm == "milp" && !is_qp_problem));
+
+    if (is_miqp_problem) {
+        std::cout << "  Model Name      : " << (model.name.empty() ? "(unnamed)" : model.name) << "\n";
+        std::cout << "  Problem Class   : MIQP (Mixed-Integer Quadratic Program - UNSUPPORTED)\n";
+        std::cout << "  Rows            : " << model.num_rows << "\n";
+        std::cout << "  Columns         : " << model.num_cols << "\n";
+        std::cout << "  A Nonzeros (NNZ): " << model.A.nnz() << "\n";
+        std::cout << "  Q Nonzeros (NNZ): " << model.Q.nnz() << "\n";
+        std::cerr << "\n[ERROR] MIQP is explicitly unsupported in Phase 8.\n";
+        return 1;
     }
 
-    std::cout << "  Model Name      : " << (model.name.empty() ? "(unnamed)" : model.name) << "\n";
-    std::cout << "  Problem Class   : " << (is_milp_problem ? "MILP (Mixed-Integer Linear Program)" : "LP (Continuous Linear Program)") << "\n";
-    std::cout << "  Rows            : " << model.num_rows << "\n";
-    std::cout << "  Columns         : " << model.num_cols << "\n";
-    if (is_milp_problem) {
-        std::cout << "  Integer Vars    : " << num_integers << " (Binary: " << num_binaries << ")\n";
+    if (is_qp_problem) {
+        std::string conv_desc;
+        auto conv = indus::qp::check_convexity(model, &conv_desc);
+        std::cout << "  Model Name      : " << (model.name.empty() ? "(unnamed)" : model.name) << "\n";
+        std::cout << "  Problem Class   : QP (Continuous Quadratic Program)\n";
+        std::cout << "  Objective Form  : 0.5 * xᵀ Q x + cᵀ x + offset\n";
+        std::cout << "  Rows            : " << model.num_rows << "\n";
+        std::cout << "  Columns         : " << model.num_cols << "\n";
+        std::cout << "  A Nonzeros (NNZ): " << model.A.nnz() << "\n";
+        std::cout << "  Q Nonzeros (NNZ): " << model.Q.nnz() << "\n";
+        std::cout << "  Convexity Status: " << indus::qp::to_string(conv) << " (" << conv_desc << ")\n";
+        std::cout << "  Objective Sense : " << (model.sense == indus::ObjSense::kMaximize ? "MAXIMIZE" : "MINIMIZE") << "\n\n";
+
+        if (conv == indus::qp::QpConvexity::kIndefinite || conv == indus::qp::QpConvexity::kNegativeDefinite || conv == indus::qp::QpConvexity::kInvalid) {
+            std::cerr << "[ERROR] Nonconvex QP rejected: " << conv_desc << "\n";
+            return 1;
+        }
+    } else {
+        int num_integers = 0;
+        int num_binaries = 0;
+        for (int j = 0; j < model.num_cols; ++j) {
+            if (model.col_type.size() > static_cast<size_t>(j) &&
+                model.col_type[static_cast<size_t>(j)] == indus::VarType::kInteger) {
+                num_integers++;
+                if (model.col_lower[static_cast<size_t>(j)] >= 0.0 && model.col_upper[static_cast<size_t>(j)] <= 1.0) {
+                    num_binaries++;
+                }
+            }
+        }
+
+        std::cout << "  Model Name      : " << (model.name.empty() ? "(unnamed)" : model.name) << "\n";
+        std::cout << "  Problem Class   : " << (is_milp_problem ? "MILP (Mixed-Integer Linear Program)" : "LP (Continuous Linear Program)") << "\n";
+        std::cout << "  Rows            : " << model.num_rows << "\n";
+        std::cout << "  Columns         : " << model.num_cols << "\n";
+        if (is_milp_problem) {
+            std::cout << "  Integer Vars    : " << num_integers << " (Binary: " << num_binaries << ")\n";
+        }
+        std::cout << "  Nonzeros (NNZ)  : " << model.A.nnz() << "\n";
+        std::cout << "  Objective Sense : " << (model.sense == indus::ObjSense::kMaximize ? "MAXIMIZE" : "MINIMIZE") << "\n\n";
     }
-    std::cout << "  Nonzeros (NNZ)  : " << model.A.nnz() << "\n";
-    std::cout << "  Objective Sense : " << (model.sense == indus::ObjSense::kMaximize ? "MAXIMIZE" : "MINIMIZE") << "\n\n";
 
     // Setup options & algorithm dispatch
     indus::Options options;
@@ -231,7 +266,11 @@ int main(int argc, char* argv[]) {
     options.integer_tolerance = integer_tol;
 
     std::string backend_name;
-    if (algorithm == "milp" || is_milp_problem) {
+    if (algorithm == "qp" || is_qp_problem) {
+        options.algorithm = "qp";
+        backend_name = "Native Primal Active-Set Convex QP";
+        options.iteration_limit = (iter_limit > 0) ? iter_limit : 100000;
+    } else if (algorithm == "milp" || is_milp_problem) {
         options.algorithm = "milp";
         backend_name = "Branch-and-Bound Native MILP";
     } else if (algorithm == "pdhg_cuda") {
@@ -351,6 +390,32 @@ int main(int argc, char* argv[]) {
                       << std::setw(26) << "  Verification Status:"
                       << (vres.passed ? (vres.optimality_proven ? "PASSED (Optimal)" : "PASSED (Feasible Incumbent)") : "FAILED") << "\n";
             verification_passed = vres.passed;
+        } else if (vres.is_qp) {
+            std::cout << std::left
+                      << std::setw(26) << "  Primal Feasibility:"
+                      << (vres.primal_feasible ? "PASSED" : "FAILED")
+                      << " (max viol: " << std::scientific << std::setprecision(2) << vres.max_primal_violation << ")\n"
+                      << std::setw(26) << "  Bounds Feasibility:"
+                      << (vres.bounds_feasible ? "PASSED" : "FAILED")
+                      << " (max viol: " << std::scientific << std::setprecision(2) << vres.max_bound_violation << ")\n"
+                      << std::setw(26) << "  Stationarity:"
+                      << (vres.max_stationarity_residual <= tol ? "PASSED" : "FAILED")
+                      << " (max residual: " << std::scientific << std::setprecision(2) << vres.max_stationarity_residual << ")\n"
+                      << std::setw(26) << "  Dual Feasibility:"
+                      << (vres.dual_feasible ? "PASSED" : "FAILED")
+                      << " (max viol: " << std::scientific << std::setprecision(2) << vres.max_dual_violation << ")\n"
+                      << std::setw(26) << "  Complementarity:"
+                      << (vres.max_complementarity_violation <= tol ? "PASSED" : "FAILED")
+                      << " (max viol: " << std::scientific << std::setprecision(2) << vres.max_complementarity_violation << ")\n"
+                      << std::setw(26) << "  Convexity Status:"
+                      << (vres.is_convex ? "PASSED (" + vres.convexity_status + ")" : "FAILED (NONCONVEX)") << "\n"
+                      << std::setw(26) << "  Recomputed Obj:"
+                      << std::fixed << std::setprecision(12) << vres.recomputed_objective << "\n"
+                      << std::setw(26) << "  Obj Discrepancy:"
+                      << std::scientific << std::setprecision(2) << vres.objective_discrepancy << "\n"
+                      << std::setw(26) << "  Verification Status:"
+                      << (vres.passed ? "PASSED" : "FAILED") << "\n";
+            verification_passed = vres.passed;
         } else {
             std::cout << std::left
                       << std::setw(26) << "  Primal Feasibility:"
@@ -399,11 +464,17 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         if (verify && (!verification_passed || (vres.is_milp && !vres.optimality_proven))) {
-            std::cerr << "\n[EXIT] Independent mathematical verification or MILP optimality proof failed.\n";
+            std::cerr << "\n[EXIT] Independent mathematical verification or optimality proof failed.\n";
             return 1;
         }
         std::cout << "\n[EXIT] Optimization successfully converged to verified optimal solution.\n";
         return 0;
+    } else if (sol.status == indus::SolveStatus::kUnsupported) {
+        std::cerr << "\n[EXIT] Solver terminated due to unsupported problem class or feature: " << sol.status_message << "\n";
+        return 1;
+    } else if (sol.status == indus::SolveStatus::kModelError) {
+        std::cerr << "\n[EXIT] Solver terminated due to model error: " << sol.status_message << "\n";
+        return 1;
     } else if (sol.status == indus::SolveStatus::kNodeLimit) {
         std::cerr << "\n[EXIT] Solver terminated due to branch-and-bound node limit (" << sol.nodes << " nodes explored).\n";
         return 1;

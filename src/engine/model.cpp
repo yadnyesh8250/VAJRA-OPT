@@ -1,5 +1,6 @@
 #include "indus/model.hpp"
 #include "indus/milp.hpp"
+#include "indus/qp.hpp"
 #include "indus/presolve.hpp"
 #include "indus/verifier.hpp"
 #include "indus/pdhg.hpp"
@@ -35,8 +36,14 @@ void Model::validate() const {
     if (num_rows < 0 || num_cols < 0) {
         throw std::invalid_argument("Model dimensions cannot be negative");
     }
-    if (A.m != num_rows || A.n != num_cols) {
-        throw std::invalid_argument("Constraint matrix A dimensions do not match model num_rows/num_cols");
+    if (num_rows == 0) {
+        if (A.m != 0 || (A.n != 0 && A.n != num_cols)) {
+            throw std::invalid_argument("Constraint matrix A dimensions do not match model num_rows/num_cols");
+        }
+    } else {
+        if (A.m != num_rows || A.n != num_cols) {
+            throw std::invalid_argument("Constraint matrix A dimensions do not match model num_rows/num_cols");
+        }
     }
     if (static_cast<int>(c.size()) != num_cols) {
         throw std::invalid_argument("Objective vector c size does not match num_cols");
@@ -88,6 +95,109 @@ void Model::validate() const {
             throw std::invalid_argument("Row " + std::to_string(i) + " lower bound exceeds upper bound");
         }
     }
+
+    // Quadratic Hessian matrix Q validation
+    if (Q.nnz() > 0) {
+        if (Q.m != num_cols || Q.n != num_cols) {
+            throw std::invalid_argument("Q matrix dimensions (" + std::to_string(Q.m) + "x" +
+                                        std::to_string(Q.n) + ") do not match num_cols (" +
+                                        std::to_string(num_cols) + ")");
+        }
+        for (double v : Q.values) {
+            if (std::isnan(v)) {
+                throw std::invalid_argument("Q matrix contains NaN value");
+            }
+            if (std::isinf(v)) {
+                throw std::invalid_argument("Q matrix contains Inf value");
+            }
+        }
+        for (int j = 0; j < Q.n; ++j) {
+            const auto rows = Q.col_rows(j);
+            for (int r : rows) {
+                if (r < 0 || r >= num_cols) {
+                    throw std::invalid_argument("Q matrix contains out-of-bounds row index: " + std::to_string(r));
+                }
+            }
+        }
+        // Symmetry validation when both (r, c) and (c, r) are explicitly stored
+        for (int c = 0; c < Q.n; ++c) {
+            const auto rows = Q.col_rows(c);
+            const auto vals = Q.col_vals(c);
+            for (size_t k = 0; k < rows.size(); ++k) {
+                const int r = rows[k];
+                if (r != c) {
+                    const double v_rc = vals[k];
+                    const auto opp_rows = Q.col_rows(r);
+                    const auto opp_vals = Q.col_vals(r);
+                    for (size_t l = 0; l < opp_rows.size(); ++l) {
+                        if (opp_rows[l] == c) {
+                            const double v_cr = opp_vals[l];
+                            const double scale = 1.0 + std::max(std::abs(v_rc), std::abs(v_cr));
+                            if (std::abs(v_rc - v_cr) > 1e-5 * scale) {
+                                throw std::invalid_argument("Q matrix is asymmetric: Q(" +
+                                                            std::to_string(r) + "," + std::to_string(c) + ")=" +
+                                                            std::to_string(v_rc) + " != Q(" +
+                                                            std::to_string(c) + "," + std::to_string(r) + ")=" +
+                                                            std::to_string(v_cr));
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+la::SparseMatrixCSC Model::get_symmetric_Q() const {
+    if (Q.nnz() == 0) {
+        return la::SparseMatrixCSC(num_cols, num_cols);
+    }
+    std::vector<la::Triplet> triplets;
+    triplets.reserve(static_cast<size_t>(Q.nnz() * 2));
+
+    for (int c = 0; c < Q.n; ++c) {
+        const auto rows = Q.col_rows(c);
+        const auto vals = Q.col_vals(c);
+        for (size_t k = 0; k < rows.size(); ++k) {
+            const int r = rows[k];
+            const double v = vals[k];
+            if (std::abs(v) <= tol::kZeroDrop) continue;
+
+            if (r == c) {
+                triplets.push_back({r, c, v});
+            } else if (r > c) {
+                double opp = 0.0;
+                bool has_opp = false;
+                const auto opp_rows = Q.col_rows(r);
+                const auto opp_vals = Q.col_vals(r);
+                for (size_t l = 0; l < opp_rows.size(); ++l) {
+                    if (opp_rows[l] == c) {
+                        opp = opp_vals[l];
+                        has_opp = true;
+                        break;
+                    }
+                }
+                const double sym_v = has_opp ? (0.5 * (v + opp)) : v;
+                triplets.push_back({r, c, sym_v});
+                triplets.push_back({c, r, sym_v});
+            } else { // r < c
+                bool has_opp = false;
+                const auto opp_rows = Q.col_rows(r);
+                for (int opp_r : opp_rows) {
+                    if (opp_r == c) {
+                        has_opp = true;
+                        break;
+                    }
+                }
+                if (!has_opp) {
+                    triplets.push_back({r, c, v});
+                    triplets.push_back({c, r, v});
+                }
+            }
+        }
+    }
+    return la::SparseMatrixCSC::from_triplets(num_cols, num_cols, triplets, true);
 }
 
 void Solution::recompute_quality(const Model& original_model) {
@@ -180,9 +290,19 @@ void Solution::recompute_quality(const Model& original_model) {
 
             const double sense_factor = (original_model.sense == ObjSense::kMaximize) ? -1.0 : 1.0;
 
+            std::vector<double> grad = original_model.c;
+            if (original_model.has_quadratic_objective()) {
+                la::SparseMatrixCSC Q_sym = original_model.get_symmetric_Q();
+                std::vector<double> Qx(static_cast<size_t>(n), 0.0);
+                Q_sym.multiply(col_value, Qx);
+                for (int j = 0; j < n; ++j) {
+                    grad[static_cast<size_t>(j)] += Qx[static_cast<size_t>(j)];
+                }
+            }
+
             col_dual.resize(static_cast<size_t>(n));
             for (int j = 0; j < n; ++j) {
-                const double c_eff = sense_factor * original_model.c[static_cast<size_t>(j)];
+                const double c_eff = sense_factor * grad[static_cast<size_t>(j)];
                 const double dj = c_eff - Aty[static_cast<size_t>(j)];
                 col_dual[static_cast<size_t>(j)] = (original_model.sense == ObjSense::kMaximize) ? -dj : dj;
 
@@ -208,6 +328,20 @@ void Solution::recompute_quality(const Model& original_model) {
                     quality.max_complementarity_violation = std::max(
                         quality.max_complementarity_violation, (-dj) * dist);
                 }
+
+                // Stationarity residual for QP
+                if (original_model.has_quadratic_objective()) {
+                    double z_proj = 0.0;
+                    if (xj <= lj + tol::kPrimalFeasibility && xj < uj - tol::kPrimalFeasibility) {
+                        z_proj = std::max(0.0, dj);
+                    } else if (xj >= uj - tol::kPrimalFeasibility && xj > lj + tol::kPrimalFeasibility) {
+                        z_proj = std::min(0.0, dj);
+                    } else if (std::abs(lj - uj) <= tol::kZeroDrop) {
+                        z_proj = dj;
+                    }
+                    const double stat_res = std::abs(dj - z_proj);
+                    quality.max_stationarity_residual = std::max(quality.max_stationarity_residual, stat_res);
+                }
             }
 
             // Dual multiplier row condition violations in canonical minimization
@@ -229,7 +363,12 @@ void Solution::recompute_quality(const Model& original_model) {
                 }
             }
 
-            quality.is_dual_feasible = (quality.max_dual_violation <= tol::kDualFeasibility);
+            if (original_model.has_quadratic_objective()) {
+                quality.is_stationary = (quality.max_stationarity_residual <= tol::kDualFeasibility);
+                quality.is_dual_feasible = quality.is_stationary && (quality.max_dual_violation <= tol::kDualFeasibility);
+            } else {
+                quality.is_dual_feasible = (quality.max_dual_violation <= tol::kDualFeasibility);
+            }
         }
     }
 }
@@ -246,12 +385,16 @@ Solution solve(const Model& model, const Options& options) {
         return sol;
     }
 
-    if (model.classify() == ProblemClass::kQp || model.classify() == ProblemClass::kMiqp) {
+    if (model.classify() == ProblemClass::kMiqp) {
         Solution sol;
-        sol.status = SolveStatus::kModelError;
-        sol.status_message = "Quadratic optimization is not supported by continuous LP solver";
+        sol.status = SolveStatus::kUnsupported;
+        sol.status_message = "MIQP (Mixed-Integer Quadratic Programming) is unsupported in Phase 8";
         sol.solve_time_seconds = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_time).count();
         return sol;
+    }
+
+    if (model.classify() == ProblemClass::kQp || options.algorithm == "qp") {
+        return qp::solve_qp(model, options);
     }
     if (model.has_integers() || options.algorithm == "milp") {
         return milp::solve_milp(model, options);

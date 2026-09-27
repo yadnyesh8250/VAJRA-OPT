@@ -42,7 +42,8 @@ enum class SolveStatus : uint8_t {
     kTimeLimit = 7,
     kNodeLimit = 8,
     kNumericalError = 9,
-    kModelError = 10
+    kModelError = 10,
+    kUnsupported = 11
 };
 
 [[nodiscard]] inline constexpr bool claims_a_point(SolveStatus status) noexcept {
@@ -72,6 +73,7 @@ inline const char* to_string(SolveStatus status) noexcept {
         case SolveStatus::kNodeLimit: return "NODE_LIMIT";
         case SolveStatus::kNumericalError: return "NUMERICAL_ERROR";
         case SolveStatus::kModelError: return "MODEL_ERROR";
+        case SolveStatus::kUnsupported: return "UNSUPPORTED";
         default: return "UNKNOWN";
     }
 }

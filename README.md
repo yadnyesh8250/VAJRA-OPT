@@ -88,8 +88,9 @@ VAJRA-OPT is an indigenously developed, self-contained optimization solver engin
 |:---|:---|:---|
 | **Continuous LP** | Bounded Dual Simplex (Devex), Bounded Primal Simplex (Harris), Restarted PDHG (CPU & CUDA) | **Fully Verified & Certified** |
 | **MILP (Mixed-Integer LP)** | Native Branch-and-Bound (`milp`), Deterministic Best-Bound Search, Cold Unpresolved Dual Simplex Relaxations, Most-Fractional Branching, Global Bound Proof | **Fully Verified & Certified (Phase 7)** |
+| **Convex QP (Continuous QP)** | Native Primal Active-Set (`qp`), Augmented Nullspace Hessian ($Q + \gamma A_W^T A_W$), Sparse $LDL^T$ Factorization, Exact KKT Stationarity, Ray Detection | **Fully Verified & Certified (Phase 8)** |
 | **Presolve / Scaling** | Ruiz Equilibration, Pock-Chambolle, 8-Pass Reversible Presolve (disabled on discrete nodes) | **Fully Verified & Certified** |
-| **QP / MIQP** | Automatic Classification (`Model::classify()`), Status Guard Rejection | *Architecturally Classified; Quadratic optimization deferred* |
+| **MIQP / Nonconvex QP** | Automatic Classification (`Model::classify()`), Strict Integrity Guards (`UNSUPPORTED` / `MODEL_ERROR`) | *Explicitly Unsupported in Phase 8* |
 
 ---
 
@@ -138,15 +139,16 @@ ctest --test-dir build-cpu --output-on-failure
 6. `test_pdhg` — 11 PDHG tests, including all 12 CUDA kernel specs verified mathematically.
 7. `test_reliability` — 10 hardening and boundary tests (empty models, 0-var, 0-row, malformed bounds, limits, repeated use, fallback).
 8. `test_milp` — Native Branch-and-Bound MILP suite (13/13 tests: 0-1 knapsack, multidimensional knapsack, production planning, MIP minimization, integer infeasibility proof, verifier integrality violation rejection, root node optimality, LP iteration-limit handling, node-limit without incumbent, time-limit handling, invalid model metadata validation, unnamed model export and re-verification, and multi-node branching trees).
-9. `test_benchmark` — Multi-engine benchmark harness in quick mode.
-10. `test_python_verifier` — Independent pure-Python external audit over benchmark instances.
+9. `test_qp` — Native Convex QP suite (21/21 tests: unconstrained analytical QP, 1-var bounded QP, equality constraints, inequality constraints, ranged constraints, sparse multi-variable QP, semidefinite QP with flat direction, objective offset, maximization sign test, asymmetric Q rejection, nonconvex Q rejection, MIQP rejection, infeasible QP, unbounded QP with ray certificate, iteration limit, time limit, NaN/Inf rejection, verifier rejection of corrupt solutions, repeated solve determinism, LP/MILP regression protection, and unnamed QP model serialization).
+10. `test_benchmark` — Multi-engine benchmark harness in quick mode (Suite 1 LP baseline, Suite 2 multi-engine telemetry, Suite 3 convex QP benchmark).
+11. `test_python_verifier` — Independent pure-Python external audit over benchmark instances with full QUADOBJ support.
 
 ---
 
 ## 5. Solver CLI (`indus_solve`) & Benchmark Execution
 
 ### A. General-Purpose Solver CLI (`indus_solve`)
-VAJRA-OPT provides a sovereign, high-performance CLI to solve arbitrary MPS and LP optimization models:
+VAJRA-OPT provides a sovereign, high-performance CLI to solve arbitrary MPS and LP optimization models across Continuous LP, MILP, and Continuous Convex QP:
 
 ```bash
 # Solve an MPS model with dual simplex and export JSON telemetry:
@@ -154,6 +156,9 @@ VAJRA-OPT provides a sovereign, high-performance CLI to solve arbitrary MPS and 
 
 # Solve a Mixed-Integer Linear Program (MILP) with Branch-and-Bound:
 ./build-cpu/indus_solve --input SOVEREIGN_SOLVER_BLUEPRINT/test_models/blend_milp.mps --algorithm milp --node-limit 50000 --mip-gap 1e-4
+
+# Solve a Continuous Convex Quadratic Program (QP) with Native Active-Set:
+./build-cpu/indus_solve --input SOVEREIGN_SOLVER_BLUEPRINT/test_models/qp_blend.mps --algorithm qp --tol 1e-6 --output qp_blend.json
 
 # Solve an LP model with primal simplex:
 ./build-cpu/indus_solve --input SOVEREIGN_SOLVER_BLUEPRINT/test_models/crude_blend.lp --algorithm primal_simplex
@@ -166,13 +171,18 @@ VAJRA-OPT provides a sovereign, high-performance CLI to solve arbitrary MPS and 
 ```
 
 CLI Features:
-- Format auto-detection: supports both `.mps` (fixed/free format) and `.lp` algebraic files with integer markers/types.
-- Algorithm selection: `dual_simplex` (default auto), `primal_simplex`, `simplex`, `pdhg_cpu`, `pdhg_cuda`, `milp`.
+- Format auto-detection: supports both `.mps` (fixed/free format with QUADOBJ/QMATRIX) and `.lp` algebraic files with integer markers/types.
+- Algorithm selection: `dual_simplex` (default auto), `primal_simplex`, `simplex`, `pdhg_cpu`, `pdhg_cuda`, `milp`, `qp`.
+- QP parameter controls & conventions:
+  - Form: $\min / \max: \frac{1}{2} x^T Q x + c^T x + \text{offset}$
+  - Gradient: $\nabla f(x) = Q x + c$
+  - Convexity validation via LDLᵀ inertia analysis: $Q \succeq 0$ (minimization), $-Q \succeq 0$ (maximization).
+  - Explicit integrity guards: MIQP returns `UNSUPPORTED` (exit code 1); Nonconvex QP returns `MODEL_ERROR` (exit code 1).
 - MILP parameter controls: `--node-limit`, `--mip-gap`, `--abs-gap`, `--integer-tol`.
-- Parameter controls: `--time-limit`, `--iter-limit`, `--tol`, `--presolve`/`--no-presolve`, `--scaling`/`--no-scaling`.
-- Dual export: supports standard `.sol` and structured `.json` solutions.
-- Built-in verification: automatically runs KKT audit on LP models and integrality & global bound proof on MILP models.
-- Exit code semantics: returns 0 on verified optimal solution; nonzero on infeasibility, unboundedness, limits, or numerical error.
+- General parameter controls: `--time-limit`, `--iter-limit`, `--tol`, `--presolve`/`--no-presolve`, `--scaling`/`--no-scaling`.
+- Dual export: supports standard `.sol` and structured `.json` solutions with full QP metadata.
+- Built-in verification: automatically runs KKT audit on LP models, integrality & global bound proof on MILP models, and stationarity/complementarity/convexity verification on QP models.
+- Exit code semantics: returns 0 on verified optimal solution; nonzero on infeasibility, unboundedness, limits, numerical error, or unsupported model class.
 
 ### B. Benchmark Execution Modes (`indus_benchmark`)
 
@@ -181,6 +191,7 @@ The multi-engine benchmark harness supports explicit execution contracts:
 1. **Quick Smoke Mode (`--quick`):**
    - Validates Suite 1 baseline (22/22 Netlib & MRPL LP models) against independent verifiers.
    - Runs fast telemetry on Suite 2 (multi-engine PDHG) with throttled iterations.
+   - Validates Suite 3 (Convex QP Benchmark: `qp_blend`, `crude_blend_qp`, `portfolio_qp_100`) with independent KKT stationarity audit.
    - Guarantees honest status reporting: non-optimal rows (e.g. `ITERATION_LIMIT` or `FEASIBLE`) are never falsely marked as `PASSED`.
    - Exits with code 0 on clean smoke run; used by automated CI/CTest gates.
    ```bash
@@ -190,6 +201,7 @@ The multi-engine benchmark harness supports explicit execution contracts:
 2. **Full Reference Verification Mode (`--full` / default):**
    - Runs full 50,000-iteration budgets on reference models.
    - Enforces independent mathematical verification and published-objective matching for Suite 2 reference models.
+   - Verifies 100% of Suite 3 QP instances.
    - Exits nonzero if any reference model fails verification or convergence limits.
    ```bash
    ./build-cpu/indus_benchmark --full --csv build-cpu/benchmark_results.csv

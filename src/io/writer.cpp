@@ -90,8 +90,13 @@ void write_solution(const Solution& solution, const Model& model, const std::str
 
     file << std::setprecision(17);
 
+    const std::string prob_class = (model.classify() == ProblemClass::kQp) ? "QP" :
+                                   (model.classify() == ProblemClass::kMilp) ? "MILP" :
+                                   (model.classify() == ProblemClass::kMiqp) ? "MIQP" : "LP";
+
     file << "# Solution produced by SIDDHANTA (INDUS-OPT)\n";
     file << "# Model: " << (model.name.empty() ? "unnamed" : model.name) << "\n";
+    file << "# Problem Class: " << prob_class << "\n";
     file << "# Rows: " << model.num_rows << " Cols: " << model.num_cols << " Nonzeros: " << model.A.nnz() << "\n";
     file << "# Algorithm: " << solution.algorithm_used << "\n";
     file << "# Git Commit: " << INDUS_GIT_COMMIT << "\n";
@@ -112,6 +117,8 @@ void write_solution(const Solution& solution, const Model& model, const std::str
     file << "# Dual Feasible: " << (solution.quality.is_dual_feasible ? "true" : "false") << "\n";
     file << "# Max Primal Violation: " << solution.quality.max_primal_violation << "\n";
     file << "# Max Dual Violation: " << solution.quality.max_dual_violation << "\n";
+    file << "# Max Stationarity Residual: " << solution.quality.max_stationarity_residual << "\n";
+    file << "# Max Complementarity Violation: " << solution.quality.max_complementarity_violation << "\n";
     file << "\n";
 
     file << "# Columns (Variables)\n";
@@ -157,7 +164,16 @@ void write_json(const Solution& solution, const Model& model, const std::string&
 
     file << std::setprecision(17);
 
+    const std::string prob_class = (model.classify() == ProblemClass::kQp) ? "QP" :
+                                   (model.classify() == ProblemClass::kMilp) ? "MILP" :
+                                   (model.classify() == ProblemClass::kMiqp) ? "MIQP" : "LP";
+    const std::string verif_status = (solution.status == SolveStatus::kOptimal &&
+                                      solution.quality.is_primal_feasible &&
+                                      (prob_class != "QP" || solution.quality.is_stationary)) ? "PASSED" :
+                                     (solution.status == SolveStatus::kOptimal ? "FAILED" : "NOT_APPLICABLE");
+
     file << "{\n";
+    file << "  \"problem_class\": \"" << prob_class << "\",\n";
     file << "  \"model_name\": \"" << json_escape(model.name.empty() ? "unnamed" : model.name) << "\",\n";
     file << "  \"num_rows\": " << model.num_rows << ",\n";
     file << "  \"num_cols\": " << model.num_cols << ",\n";
@@ -165,9 +181,13 @@ void write_json(const Solution& solution, const Model& model, const std::string&
     file << "  \"algorithm\": \"" << json_escape(solution.algorithm_used) << "\",\n";
     file << "  \"git_commit\": \"" << json_escape(INDUS_GIT_COMMIT) << "\",\n";
     file << "  \"status\": \"" << status_to_str(solution.status) << "\",\n";
+    file << "  \"verification_status\": \"" << verif_status << "\",\n";
     file << "  \"status_message\": \"" << json_escape(solution.status_message) << "\",\n";
     file << "  \"termination_reason\": \"" << json_escape(solution.termination_reason.empty() ? solution.status_message : solution.termination_reason) << "\",\n";
     file << "  \"objective_value\": " << solution.objective_value << ",\n";
+    file << "  \"max_primal_violation\": " << solution.quality.max_primal_violation << ",\n";
+    file << "  \"max_stationarity_residual\": " << solution.quality.max_stationarity_residual << ",\n";
+    file << "  \"max_complementarity_violation\": " << solution.quality.max_complementarity_violation << ",\n";
     file << "  \"best_dual_bound\": " << solution.best_dual_bound << ",\n";
     file << "  \"has_incumbent\": " << (solution.has_incumbent ? "true" : "false") << ",\n";
     file << "  \"absolute_gap\": " << solution.absolute_gap << ",\n";
@@ -181,8 +201,10 @@ void write_json(const Solution& solution, const Model& model, const std::string&
     file << "  \"quality\": {\n";
     file << "    \"is_primal_feasible\": " << (solution.quality.is_primal_feasible ? "true" : "false") << ",\n";
     file << "    \"is_dual_feasible\": " << (solution.quality.is_dual_feasible ? "true" : "false") << ",\n";
+    file << "    \"is_stationary\": " << (solution.quality.is_stationary ? "true" : "false") << ",\n";
     file << "    \"max_primal_violation\": " << solution.quality.max_primal_violation << ",\n";
     file << "    \"max_dual_violation\": " << solution.quality.max_dual_violation << ",\n";
+    file << "    \"max_stationarity_residual\": " << solution.quality.max_stationarity_residual << ",\n";
     file << "    \"max_complementarity_violation\": " << solution.quality.max_complementarity_violation << ",\n";
     file << "    \"duality_gap\": " << solution.quality.duality_gap << "\n";
     file << "  },\n";

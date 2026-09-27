@@ -41,6 +41,7 @@ class MPSModel:
         self.col_lower: Dict[str, float] = {}
         self.col_upper: Dict[str, float] = {}
         self.col_integer: Dict[str, bool] = {}
+        self.Q: Dict[Tuple[str, str], float] = {}
 
 
 def parse_mps_independent(filepath: str) -> MPSModel:
@@ -69,7 +70,7 @@ def parse_mps_independent(filepath: str) -> MPSModel:
                 section = 'OBJSENSE'
             elif sec_name == 'OBJNAME':
                 section = 'OBJNAME'
-            elif sec_name in ('ROWS', 'COLUMNS', 'RHS', 'RANGES', 'BOUNDS', 'ENDATA'):
+            elif sec_name in ('ROWS', 'COLUMNS', 'RHS', 'RANGES', 'BOUNDS', 'QUADOBJ', 'QMATRIX', 'ENDATA'):
                 section = sec_name
             continue
             
@@ -207,6 +208,17 @@ def parse_mps_independent(filepath: str) -> MPSModel:
                         model.col_lower[col_name] = -math.inf
                     elif b_type == 'PL':
                         model.col_upper[col_name] = math.inf
+
+        elif section in ('QUADOBJ', 'QMATRIX'):
+            if len(tokens) >= 3:
+                c1, c2, val_str = tokens[0], tokens[1], tokens[2]
+                try:
+                    q_val = float(val_str)
+                    model.Q[(c1, c2)] = q_val
+                    if c1 != c2:
+                        model.Q[(c2, c1)] = q_val
+                except ValueError:
+                    pass
                         
     return model
 
@@ -416,6 +428,8 @@ class Solution:
         self.termination_reason: str = ""
         self.nodes: int = 0
         self.open_nodes: int = 0
+        self.is_qp: bool = False
+        self.max_stationarity_residual: Optional[float] = None
         self.col_values: Dict[str, float] = {}
         self.col_duals: Dict[str, float] = {}
         self.row_values: Dict[str, float] = {}
@@ -441,6 +455,16 @@ def parse_solution_independent(filepath: str, model: MPSModel) -> Solution:
                 parts = line.split()
                 if len(parts) >= 3:
                     sol.status = parts[2].upper()
+            elif "Problem Class:" in line:
+                if "QP" in line:
+                    sol.is_qp = True
+            elif "Max Stationarity Residual:" in line:
+                parts = line.split()
+                if len(parts) >= 4:
+                    try:
+                        sol.max_stationarity_residual = float(parts[-1])
+                    except ValueError:
+                        pass
             elif "Objective:" in line:
                 parts = line.split()
                 if len(parts) >= 3:
@@ -613,9 +637,17 @@ def verify_sovereign(model_path: str, sol_path: str, tol: float = 1e-6) -> Tuple
             violations.append(f"Row '{r}' upper bound violated: act={act:.7e} > u={ur:.7e} (diff={viol:.2e})")
             
     # 3. Check Objective Value
+    is_qp = bool(model.Q) or sol.is_qp
     recomputed_obj = model.obj_offset
     for col in model.col_order:
         recomputed_obj += model.col_obj.get(col, 0.0) * sol.col_values[col]
+    if model.Q:
+        quad_term = 0.0
+        for (c1, c2), q_val in model.Q.items():
+            v1 = sol.col_values.get(c1, 0.0)
+            v2 = sol.col_values.get(c2, 0.0)
+            quad_term += 0.5 * q_val * v1 * v2
+        recomputed_obj += quad_term
         
     obj_err = abs(sol.reported_objective - recomputed_obj)
     obj_scale = max(1.0, abs(recomputed_obj))
@@ -656,30 +688,51 @@ def verify_sovereign(model_path: str, sol_path: str, tol: float = 1e-6) -> Tuple
                 if abs_gap > mip_tol and rel_gap > mip_tol:
                     violations.append(f"Global MIP gap not proven: incumbent={sol.reported_objective}, best_bound={sol.best_dual_bound}, abs_gap={abs_gap:.2e}, rel_gap={rel_gap:.2e} > tol={mip_tol:.2e}")
 
-    # 5. Check Dual Feasibility & Complementary Slackness (Continuous LP only)
+    # 5. Check Dual Feasibility & Stationarity & Complementarity (Continuous LP and QP)
     max_dual_viol = 0.0
     max_cs_viol = 0.0
+    max_stat_viol = 0.0
     if not is_milp and sol.status == "OPTIMAL" and sol.row_duals and sol.col_duals:
+        sense_factor = -1.0 if model.sense == "MAX" else 1.0
         for col in model.col_order:
             cj = model.col_obj.get(col, 0.0)
+            q_sum = 0.0
+            if model.Q:
+                for c2 in model.col_order:
+                    if (col, c2) in model.Q:
+                        q_sum += model.Q[(col, c2)] * sol.col_values.get(c2, 0.0)
+            grad_j = sense_factor * (cj + q_sum)
             a_trans_y = 0.0
             for r_name, coeff in model.col_coeffs[col]:
                 y_i = sol.row_duals.get(r_name, 0.0)
                 a_trans_y += coeff * y_i
-            recomputed_dj = cj - a_trans_y
+            recomputed_dj = grad_j - a_trans_y
             reported_dj = sol.col_duals.get(col, 0.0)
             dj_diff = abs(recomputed_dj - reported_dj)
             if dj_diff > max(1e-4, tol * 100):
                 max_dual_viol = max(max_dual_viol, dj_diff)
                 
-            # Complementary slackness
+            # Complementary slackness & stationarity
             xj = sol.col_values[col]
             lj = model.col_lower[col]
             uj = model.col_upper[col]
             
-            if xj > lj + 1e-5 and xj < uj - 1e-5:
-                if abs(reported_dj) > 1e-4:
-                    max_cs_viol = max(max_cs_viol, abs(reported_dj))
+            if is_qp:
+                z_proj = 0.0
+                if xj <= lj + tol and xj < uj - tol:
+                    z_proj = max(0.0, recomputed_dj)
+                elif xj >= uj - tol and xj > lj + tol:
+                    z_proj = min(0.0, recomputed_dj)
+                elif abs(lj - uj) <= 1e-11:
+                    z_proj = recomputed_dj
+                stat_res = abs(recomputed_dj - z_proj)
+                if stat_res > max(1e-4, tol * 100):
+                    max_stat_viol = max(max_stat_viol, stat_res)
+                    violations.append(f"Column '{col}' stationarity violated: residual={stat_res:.2e} > tol={tol:.2e}")
+            else:
+                if xj > lj + 1e-5 and xj < uj - 1e-5:
+                    if abs(reported_dj) > 1e-4:
+                        max_cs_viol = max(max_cs_viol, abs(reported_dj))
                     
     passed = (len(violations) == 0)
     return passed, violations

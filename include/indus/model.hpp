@@ -51,6 +51,7 @@ public:
     [[nodiscard]] bool has_integers() const noexcept;
     [[nodiscard]] ProblemClass classify() const noexcept;
     void validate() const;
+    [[nodiscard]] la::SparseMatrixCSC get_symmetric_Q() const;
 };
 
 struct SolutionQuality {
@@ -58,11 +59,13 @@ struct SolutionQuality {
     double max_dual_violation = 0.0;
     double max_complementarity_violation = 0.0;
     double max_integrality_violation = 0.0;
+    double max_stationarity_residual = 0.0;
     double duality_gap = 0.0;
     double relative_duality_gap = 0.0;
     bool is_primal_feasible = false;
     bool is_dual_feasible = false;
     bool is_integer_feasible = true;
+    bool is_stationary = false;
 };
 
 class Solution {

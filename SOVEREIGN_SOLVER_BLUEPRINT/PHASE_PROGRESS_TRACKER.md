@@ -86,8 +86,22 @@
   - [X] **Stress & Edge-Case Coverage (Audit Finding #6):** 13/13 MILP test suite (`tests/test_milp.cpp`) covering: binary knapsack, Correction #6 model with node limit and unproven optimality, general integer production planning, mixed-integer minimization, integer infeasibility proof, integrality violation rejection, root node optimality, LP iteration-limit handling, node-limit without incumbent, time-limit handling, invalid model metadata validation, unnamed model export and re-verification, and multi-node branching tree.
   - *Gate Check:* 10/10 CTest suites pass 100% green; 13/13 MILP tests pass; clean build in `/tmp/vajra-phase7-final` 100% clean; zero foreign solver symbols [PASSED].
 
+- [X] **PHASE 8: Native Convex Quadratic Programming (QP) Support**
+  - [X] `include/indus/qp.hpp`, `src/solvers/qp/qp_solver.cpp` (From-scratch Native Primal Active-Set Convex QP Solver with LDLᵀ factorization, Augmented Nullspace Hessian, and exact KKT stationarity).
+  - [X] **Objective Convention**: Consistently documented and enforced as $\min / \max: \frac{1}{2} x^T Q x + c^T x + \text{offset}$, with gradient $\nabla f(x) = Q x + c$.
+  - [X] **Convexity Validation & Inertia Analysis**: Sparse LDLᵀ inertia analysis on $Q$ (minimization) or $-Q$ (maximization) via `indus::qp::check_convexity()`. Indefinite or non-convex quadratics are rejected with `kModelError`. Positive semidefinite $Q$ supported via Augmented Nullspace Hessian regularization.
+  - [X] **Model Validation**: `Model::validate()` validates $Q$ dimensions match `num_cols`, verifies no NaN or Inf entries, checks index bounds, audits symmetry $|Q_{rc} - Q_{cr}| \le 10^{-5}$, and safely averages or symmetrizes lower/upper/full $Q$ representations into standard symmetric CSC via `Model::get_symmetric_Q()`.
+  - [X] **Explicit Scope Rejection**: MIQP (integer variables with quadratic objective) is classified and strictly rejected with `kUnsupported`. Nonconvex QP is rejected with `kModelError`.
+  - [X] **Augmented Nullspace Hessian & Subproblem Solving**: Solves equality-constrained subproblems via Augmented Nullspace Hessian $Q_{\gamma} = Q_{FF} + \gamma A_{W, F}^T A_{W, F}$ ($\gamma = 1.0$) and Schur complement, guaranteeing strict positive definiteness on the nullspace of active constraints without condition number explosion.
+  - [X] **Unbounded Ray Detection**: Detects unblocked rays of infinite descent with zero curvature ($g^T p < 0$ and $p^T Q p \le 0$) and returns `kUnbounded` with `"ray"` certificate.
+  - [X] **Solution Quality & Independent Verification**: `Solution::recompute_quality()` evaluates the true QP gradient $g = Q x + c$ and projectable stationarity residual $\|d - z^{\text{proj}}\|_\infty$. `verifier::verify_solution()` and `validator/independent_verifier.py` independently recompute the quadratic objective, evaluate gradient stationarity, and verify primal/dual feasibility and complementarity.
+  - [X] **Serialization & CLI Integration**: `.sol` and JSON export include top-level `"problem_class": "QP"`, `"algorithm": "convex_qp"`, `"max_stationarity_residual"`, `"max_complementarity_violation"`, and `"verification_status"`. `indus_solve` CLI supports `--algorithm qp`, prints full QP metadata, and returns exit code 0 for verified optimal QP and non-zero for unverified/unsupported models.
+  - [X] **Comprehensive Unit & Integration Test Suite (`tests/test_qp.cpp`)**: 21/21 independent test cases passing 100% green covering: unconstrained QP, bounded 1-var QP, equality constraints, inequality constraints, ranged constraints, sparse multi-variable QP, semidefinite QP with flat direction, objective offset, maximization sign test, asymmetric Q rejection, nonconvex Q rejection, MIQP rejection, infeasible QP, unbounded QP with ray certificate, iteration limit, time limit, NaN/Inf rejection, verifier rejection of corrupt solutions, repeated solve determinism, LP/MILP regression protection, and unnamed QP model serialization.
+  - [X] **QP Benchmark Suite (Suite 3)**: Integrated into `apps/benchmark_runner.cpp` with 3/3 verified QP models (`qp_blend`, `crude_blend_qp`, `portfolio_qp_100`), exporting all required metrics to `benchmark_results.csv`.
+  - *Gate Check:* 11/11 CTest suites pass 100% green; 21/21 QP tests pass; 22/22 LP benchmarks pass; 3/3 QP benchmarks verified; zero foreign solver dependencies [PASSED].
+
 - [-] **FUTURE SCOPE (Maintained Sovereign Scope):**
-  - Continuous LP solver and Native MILP Branch-and-Bound solver are hardened and sovereignly certified.
-  - Quadratic programming (QP / MIQP) architecturally classified but deferred.
+  - Continuous LP, Native MILP Branch-and-Bound, and Native Convex QP are hardened and sovereignly certified.
+  - Mixed-Integer Quadratic Programming (MIQP) and Nonconvex QP remain explicitly classified as unsupported.
   - Physical GPU execution pending dedicated NVIDIA hardware testbed.
 

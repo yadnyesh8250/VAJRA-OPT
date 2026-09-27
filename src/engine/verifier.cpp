@@ -1,5 +1,6 @@
 #include "indus/verifier.hpp"
 #include "indus/io.hpp"
+#include "indus/qp.hpp"
 #include <fstream>
 #include <sstream>
 #include <cmath>
@@ -111,12 +112,36 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
     res.max_primal_violation = std::max(res.max_bound_violation, res.max_row_violation);
     res.primal_feasible = (res.max_primal_violation <= tol);
 
-    // 4. Objective Recomputation
-    double recomputed_cTx = model.objective_offset;
-    for (int j = 0; j < n; ++j) {
-        recomputed_cTx += model.c[static_cast<size_t>(j)] * solution.col_value[static_cast<size_t>(j)];
+    res.is_qp = model.has_quadratic_objective();
+    res.is_milp = model.has_integers();
+
+    // Convexity check for QP
+    if (res.is_qp) {
+        std::string conv_msg;
+        auto conv = qp::check_convexity(model, &conv_msg);
+        res.convexity_status = qp::to_string(conv);
+        res.is_convex = (conv == qp::QpConvexity::kPositiveDefinite || conv == qp::QpConvexity::kPositiveSemidefinite);
+        if (!res.is_convex) {
+            res.violations.push_back("Nonconvex QP rejected: " + conv_msg);
+        }
     }
-    res.recomputed_objective = recomputed_cTx;
+
+    // 4. Objective Recomputation
+    double recomputed_obj = model.objective_offset;
+    for (int j = 0; j < n; ++j) {
+        recomputed_obj += model.c[static_cast<size_t>(j)] * solution.col_value[static_cast<size_t>(j)];
+    }
+    if (res.is_qp) {
+        la::SparseMatrixCSC Q_sym = model.get_symmetric_Q();
+        std::vector<double> Qx(static_cast<size_t>(n), 0.0);
+        Q_sym.multiply(solution.col_value, Qx);
+        double quad_part = 0.0;
+        for (int j = 0; j < n; ++j) {
+            quad_part += 0.5 * solution.col_value[static_cast<size_t>(j)] * Qx[static_cast<size_t>(j)];
+        }
+        recomputed_obj += quad_part;
+    }
+    res.recomputed_objective = recomputed_obj;
     res.objective_discrepancy = std::abs(res.recomputed_objective - res.reported_objective);
     const double obj_denom = std::max(1.0, std::abs(res.reported_objective));
     res.objective_matches = (res.objective_discrepancy / obj_denom <= tol);
@@ -126,7 +151,6 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
     }
 
     // 5. Integrality Check for MILP Models
-    res.is_milp = model.has_integers();
     if (res.is_milp) {
         for (int j = 0; j < n; ++j) {
             if (model.col_type.size() > static_cast<size_t>(j) &&
@@ -144,15 +168,25 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
         }
     }
 
-    // 6. Dual Feasibility & Complementary Slackness (Continuous LP only)
+    // 6. Dual Feasibility & Complementary Slackness (Continuous LP and QP)
     if (!res.is_milp && static_cast<int>(solution.row_dual.size()) == m) {
         std::vector<double> Aty(static_cast<size_t>(n), 0.0);
         model.A.multiply_transpose(solution.row_dual, Aty);
 
         const double sense_factor = (model.sense == ObjSense::kMaximize) ? -1.0 : 1.0;
 
+        std::vector<double> grad = model.c;
+        if (res.is_qp) {
+            la::SparseMatrixCSC Q_sym = model.get_symmetric_Q();
+            std::vector<double> Qx(static_cast<size_t>(n), 0.0);
+            Q_sym.multiply(solution.col_value, Qx);
+            for (int j = 0; j < n; ++j) {
+                grad[static_cast<size_t>(j)] += Qx[static_cast<size_t>(j)];
+            }
+        }
+
         for (int j = 0; j < n; ++j) {
-            const double c_eff = sense_factor * model.c[static_cast<size_t>(j)];
+            const double c_eff = sense_factor * grad[static_cast<size_t>(j)];
             const double dj = c_eff - Aty[static_cast<size_t>(j)];
 
             const double xj = solution.col_value[static_cast<size_t>(j)];
@@ -181,6 +215,20 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
                 const double dist = std::abs(xj - uj);
                 res.max_complementarity_violation = std::max(res.max_complementarity_violation, (-dj) * dist);
             }
+
+            // Stationarity residual for QP
+            if (res.is_qp) {
+                double z_proj = 0.0;
+                if (xj <= lj + tol && xj < uj - tol) {
+                    z_proj = std::max(0.0, dj);
+                } else if (xj >= uj - tol && xj > lj + tol) {
+                    z_proj = std::min(0.0, dj);
+                } else if (std::abs(lj - uj) <= 1e-11) {
+                    z_proj = dj;
+                }
+                const double stat_res = std::abs(dj - z_proj);
+                res.max_stationarity_residual = std::max(res.max_stationarity_residual, stat_res);
+            }
         }
 
         for (int i = 0; i < m; ++i) {
@@ -204,7 +252,14 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
                 }
             }
         }
-        res.dual_feasible = (res.max_dual_violation <= tol && res.max_complementarity_violation <= tol);
+        if (res.is_qp) {
+            if (res.max_stationarity_residual > tol) {
+                res.violations.push_back("Stationarity violation: max residual " + std::to_string(res.max_stationarity_residual) + " > " + std::to_string(tol));
+            }
+            res.dual_feasible = (res.max_stationarity_residual <= tol && res.max_dual_violation <= tol && res.max_complementarity_violation <= tol);
+        } else {
+            res.dual_feasible = (res.max_dual_violation <= tol && res.max_complementarity_violation <= tol);
+        }
     } else {
         res.dual_feasible = true; // No dual multipliers or MILP problem
     }
@@ -225,6 +280,11 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
             // Distinguish FEASIBLE/limit from VERIFIED OPTIMAL
             res.passed = feasible;
         }
+    } else if (res.is_qp) {
+        // QP KKT verification checks primal feasibility, dual feasibility, stationarity, convexity, objective
+        res.passed = res.primal_feasible && res.bounds_feasible && res.objective_matches &&
+                     res.dual_feasible && res.is_convex && res.violations.empty();
+        res.optimality_proven = res.passed && (solution.status == SolveStatus::kOptimal);
     } else {
         // LP KKT verification checks primal feasibility, dual feasibility, complementarity, bounds, obj
         res.passed = res.primal_feasible && res.bounds_feasible && res.objective_matches &&
@@ -248,6 +308,15 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
            << ", Integrality viol: " << res.max_integrality_violation
            << ", Obj discrepancy: " << res.objective_discrepancy
            << ", MIP Gap: " << res.mip_gap;
+    } else if (res.is_qp) {
+        ss << (res.passed ? "[VERIFIED QP OPTIMAL]" : "[QP VERIFICATION FAILED]")
+           << " Primal viol: " << res.max_primal_violation
+           << ", Bound viol: " << res.max_bound_violation
+           << ", Stationarity: " << res.max_stationarity_residual
+           << ", Dual viol: " << res.max_dual_violation
+           << ", Complementarity: " << res.max_complementarity_violation
+           << ", Obj discrepancy: " << res.objective_discrepancy
+           << ", Convexity: " << res.convexity_status;
     } else {
         ss << (res.passed ? "[VERIFIED OPTIMAL]" : "[VERIFICATION FAILED]")
            << " Primal viol: " << res.max_primal_violation

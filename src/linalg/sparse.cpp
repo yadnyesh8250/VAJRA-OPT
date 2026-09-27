@@ -56,7 +56,8 @@ void SparseMatrixCSC::set_from_triplets(int rows, int cols, const std::vector<Tr
 
     // Step 1: Count entries per column
     for (const auto& t : triplets) {
-        if (t.row >= 0 && t.row < m && t.col >= 0 && t.col < n && std::abs(t.value) > tol::kZeroDrop) {
+        if (t.row >= 0 && t.row < m && t.col >= 0 && t.col < n &&
+            (std::isnan(t.value) || std::isinf(t.value) || std::abs(t.value) > tol::kZeroDrop)) {
             col_ptr[static_cast<size_t>(t.col + 1)]++;
         }
     }
@@ -75,7 +76,8 @@ void SparseMatrixCSC::set_from_triplets(int rows, int cols, const std::vector<Tr
 
     // Step 3: Populate row_idx and values
     for (const auto& t : triplets) {
-        if (t.row >= 0 && t.row < m && t.col >= 0 && t.col < n && std::abs(t.value) > tol::kZeroDrop) {
+        if (t.row >= 0 && t.row < m && t.col >= 0 && t.col < n &&
+            (std::isnan(t.value) || std::isinf(t.value) || std::abs(t.value) > tol::kZeroDrop)) {
             const int64_t dest = cursor[static_cast<size_t>(t.col)]++;
             row_idx[static_cast<size_t>(dest)] = t.row;
             values[static_cast<size_t>(dest)] = t.value;
@@ -319,7 +321,8 @@ void SparseMatrixCSR::set_from_triplets(int rows, int cols, const std::vector<Tr
     }
 
     for (const auto& t : triplets) {
-        if (t.row >= 0 && t.row < m && t.col >= 0 && t.col < n && std::abs(t.value) > tol::kZeroDrop) {
+        if (t.row >= 0 && t.row < m && t.col >= 0 && t.col < n &&
+            (std::isnan(t.value) || std::isinf(t.value) || std::abs(t.value) > tol::kZeroDrop)) {
             row_ptr[static_cast<size_t>(t.row + 1)]++;
         }
     }
@@ -335,7 +338,8 @@ void SparseMatrixCSR::set_from_triplets(int rows, int cols, const std::vector<Tr
     std::vector<int64_t> cursor = row_ptr;
 
     for (const auto& t : triplets) {
-        if (t.row >= 0 && t.row < m && t.col >= 0 && t.col < n && std::abs(t.value) > tol::kZeroDrop) {
+        if (t.row >= 0 && t.row < m && t.col >= 0 && t.col < n &&
+            (std::isnan(t.value) || std::isinf(t.value) || std::abs(t.value) > tol::kZeroDrop)) {
             const int64_t dest = cursor[static_cast<size_t>(t.row)]++;
             col_idx[static_cast<size_t>(dest)] = t.col;
             values[static_cast<size_t>(dest)] = t.value;
