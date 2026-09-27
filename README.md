@@ -1,9 +1,9 @@
 # VAJRA-OPT (INDUS-OPT): Indigenous Sovereign Optimization Engine
 
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)]()
-[![CTest Coverage](https://img.shields.io/badge/CTest-9%2F9%20Passed%20(100%25)-success.svg)]()
+[![CTest Coverage](https://img.shields.io/badge/CTest-10%2F10%20Passed%20(100%25)-success.svg)]()
 [![Benchmark Verification](https://img.shields.io/badge/Benchmarks-22%2F22%20Verified%20(100%25)-success.svg)]()
-[![Phase Status](https://img.shields.io/badge/Phase%206-Hardened%20%26%20Reproducible-blue.svg)]()
+[![Phase Status](https://img.shields.io/badge/Phase%207-Native%20MILP%20Complete-blue.svg)]()
 [![License](https://img.shields.io/badge/License-Proprietary%20%2F%20MRPL%20Sovereign-red.svg)]()
 
 > **MRPL Problem Statement 26119:** Development of an indigenous, autonomous mathematical optimization solver for continuous and mixed-integer industrial operations, refinery scheduling, and resource allocation without foreign dependencies or telemetry.
@@ -87,8 +87,9 @@ VAJRA-OPT is an indigenously developed, self-contained optimization solver engin
 | Problem Class | Implemented Algorithms | Status |
 |:---|:---|:---|
 | **Continuous LP** | Bounded Dual Simplex (Devex), Bounded Primal Simplex (Harris), Restarted PDHG (CPU & CUDA) | **Fully Verified & Certified** |
-| **Presolve / Scaling** | Ruiz Equilibration, Pock-Chambolle, 8-Pass Reversible Presolve | **Fully Verified & Certified** |
-| **MILP / QP / MIQP** | Automatic Classification (`Model::classify()`), Status Guard Rejection | *Architecturally Classified; Solver Scope Unexpanded in Phase 6* |
+| **MILP (Mixed-Integer LP)** | Native Branch-and-Bound (`milp`), Deterministic Best-Bound Search, Cold Unpresolved Dual Simplex Relaxations, Most-Fractional Branching, Global Bound Proof | **Fully Verified & Certified (Phase 7)** |
+| **Presolve / Scaling** | Ruiz Equilibration, Pock-Chambolle, 8-Pass Reversible Presolve (disabled on discrete nodes) | **Fully Verified & Certified** |
+| **QP / MIQP** | Automatic Classification (`Model::classify()`), Status Guard Rejection | *Architecturally Classified; Quadratic optimization deferred* |
 
 ---
 
@@ -136,8 +137,9 @@ ctest --test-dir build-cpu --output-on-failure
 5. `test_presolve` — 16 presolve reduction tests with full dual postsolve validation.
 6. `test_pdhg` — 11 PDHG tests, including all 12 CUDA kernel specs verified mathematically.
 7. `test_reliability` — 10 hardening and boundary tests (empty models, 0-var, 0-row, malformed bounds, limits, repeated use, fallback).
-8. `test_benchmark` — Multi-engine benchmark harness in quick mode.
-9. `test_python_verifier` — Independent pure-Python external audit over benchmark instances.
+8. `test_milp` — Native Branch-and-Bound MILP suite (13/13 tests: 0-1 knapsack, multidimensional knapsack, production planning, MIP minimization, integer infeasibility proof, verifier integrality violation rejection, root node optimality, LP iteration-limit handling, node-limit without incumbent, time-limit handling, invalid model metadata validation, unnamed model export and re-verification, and multi-node branching trees).
+9. `test_benchmark` — Multi-engine benchmark harness in quick mode.
+10. `test_python_verifier` — Independent pure-Python external audit over benchmark instances.
 
 ---
 
@@ -150,6 +152,9 @@ VAJRA-OPT provides a sovereign, high-performance CLI to solve arbitrary MPS and 
 # Solve an MPS model with dual simplex and export JSON telemetry:
 ./build-cpu/indus_solve --input SOVEREIGN_SOLVER_BLUEPRINT/test_models/afiro.mps --output afiro_sol.json
 
+# Solve a Mixed-Integer Linear Program (MILP) with Branch-and-Bound:
+./build-cpu/indus_solve --input SOVEREIGN_SOLVER_BLUEPRINT/test_models/blend_milp.mps --algorithm milp --node-limit 50000 --mip-gap 1e-4
+
 # Solve an LP model with primal simplex:
 ./build-cpu/indus_solve --input SOVEREIGN_SOLVER_BLUEPRINT/test_models/crude_blend.lp --algorithm primal_simplex
 
@@ -161,11 +166,12 @@ VAJRA-OPT provides a sovereign, high-performance CLI to solve arbitrary MPS and 
 ```
 
 CLI Features:
-- Format auto-detection: supports both `.mps` (fixed/free format) and `.lp` algebraic files.
-- Algorithm selection: `dual_simplex` (default auto), `primal_simplex`, `simplex`, `pdhg_cpu`, `pdhg_cuda`.
+- Format auto-detection: supports both `.mps` (fixed/free format) and `.lp` algebraic files with integer markers/types.
+- Algorithm selection: `dual_simplex` (default auto), `primal_simplex`, `simplex`, `pdhg_cpu`, `pdhg_cuda`, `milp`.
+- MILP parameter controls: `--node-limit`, `--mip-gap`, `--abs-gap`, `--integer-tol`.
 - Parameter controls: `--time-limit`, `--iter-limit`, `--tol`, `--presolve`/`--no-presolve`, `--scaling`/`--no-scaling`.
 - Dual export: supports standard `.sol` and structured `.json` solutions.
-- Built-in verification: automatically runs KKT and complementarity audit on solution vectors.
+- Built-in verification: automatically runs KKT audit on LP models and integrality & global bound proof on MILP models.
 - Exit code semantics: returns 0 on verified optimal solution; nonzero on infeasibility, unboundedness, limits, or numerical error.
 
 ### B. Benchmark Execution Modes (`indus_benchmark`)

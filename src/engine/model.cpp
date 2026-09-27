@@ -1,4 +1,5 @@
 #include "indus/model.hpp"
+#include "indus/milp.hpp"
 #include "indus/presolve.hpp"
 #include "indus/verifier.hpp"
 #include "indus/pdhg.hpp"
@@ -47,13 +48,43 @@ void Model::validate() const {
         throw std::invalid_argument("Row bounds sizes do not match num_rows");
     }
 
+    // Integrality metadata validation
+    if (!col_type.empty() && static_cast<int>(col_type.size()) != num_cols) {
+        throw std::invalid_argument("col_type size (" + std::to_string(col_type.size()) +
+                                    ") does not match num_cols (" + std::to_string(num_cols) + ")");
+    }
+
     for (int j = 0; j < num_cols; ++j) {
-        if (col_lower[static_cast<size_t>(j)] > col_upper[static_cast<size_t>(j)] + tol::kZeroDrop) {
+        const double lj = col_lower[static_cast<size_t>(j)];
+        const double uj = col_upper[static_cast<size_t>(j)];
+        if (std::isnan(lj) || std::isnan(uj)) {
+            throw std::invalid_argument("Column " + std::to_string(j) + " contains NaN bound");
+        }
+        if (lj > uj + tol::kZeroDrop) {
             throw std::invalid_argument("Column " + std::to_string(j) + " lower bound exceeds upper bound");
+        }
+
+        // Integer variable validation
+        if (static_cast<size_t>(j) < col_type.size() && col_type[static_cast<size_t>(j)] == VarType::kInteger) {
+            if (std::isinf(lj) || std::isinf(uj)) {
+                throw std::invalid_argument("Integer variable " + std::to_string(j) + " has infinite bound");
+            }
+            if (lj > uj) {
+                throw std::invalid_argument("Integer variable " + std::to_string(j) + " lower bound exceeds upper bound");
+            }
+            if (std::ceil(lj) > std::floor(uj)) {
+                throw std::invalid_argument("Integer variable " + std::to_string(j) + " has empty integer range [" +
+                                            std::to_string(lj) + ", " + std::to_string(uj) + "]");
+            }
         }
     }
     for (int i = 0; i < num_rows; ++i) {
-        if (row_lower[static_cast<size_t>(i)] > row_upper[static_cast<size_t>(i)] + tol::kZeroDrop) {
+        const double li = row_lower[static_cast<size_t>(i)];
+        const double ui = row_upper[static_cast<size_t>(i)];
+        if (std::isnan(li) || std::isnan(ui)) {
+            throw std::invalid_argument("Row " + std::to_string(i) + " contains NaN bound");
+        }
+        if (li > ui + tol::kZeroDrop) {
             throw std::invalid_argument("Row " + std::to_string(i) + " lower bound exceeds upper bound");
         }
     }
@@ -121,69 +152,99 @@ void Solution::recompute_quality(const Model& original_model) {
     quality.is_primal_feasible = (quality.max_primal_violation <= tol::kPrimalFeasibility ||
                                   max_rel_primal_violation <= tol::kPrimalFeasibility);
 
-    // 3. Dual feasibility & complementary slackness (if dual vector present)
-    if (static_cast<int>(row_dual.size()) == m) {
-        std::vector<double> Aty(static_cast<size_t>(n), 0.0);
-        original_model.A.multiply_transpose(row_dual, Aty);
-
-        const double sense_factor = (original_model.sense == ObjSense::kMaximize) ? -1.0 : 1.0;
-
-        col_dual.resize(static_cast<size_t>(n));
+    // 3. Integrality check for MILP
+    if (original_model.has_integers()) {
+        quality.max_integrality_violation = 0.0;
+        quality.is_integer_feasible = true;
         for (int j = 0; j < n; ++j) {
-            const double c_eff = sense_factor * original_model.c[static_cast<size_t>(j)];
-            const double dj = c_eff - Aty[static_cast<size_t>(j)];
-            col_dual[static_cast<size_t>(j)] = (original_model.sense == ObjSense::kMaximize) ? -dj : dj;
-
-            const double xj = col_value[static_cast<size_t>(j)];
-            const double lj = original_model.col_lower[static_cast<size_t>(j)];
-            const double uj = original_model.col_upper[static_cast<size_t>(j)];
-
-            // Reduced cost violations in canonical minimization
-            if (xj < uj - tol::kPrimalFeasibility && dj < -tol::kDualFeasibility) {
-                quality.max_dual_violation = std::max(quality.max_dual_violation, -dj);
-            }
-            if (xj > lj + tol::kPrimalFeasibility && dj > tol::kDualFeasibility) {
-                quality.max_dual_violation = std::max(quality.max_dual_violation, dj);
-            }
-
-            // Complementarity
-            if (dj > tol::kDualFeasibility) {
-                const double dist = std::abs(xj - lj);
-                quality.max_complementarity_violation = std::max(
-                    quality.max_complementarity_violation, dj * dist);
-            } else if (dj < -tol::kDualFeasibility) {
-                const double dist = std::abs(xj - uj);
-                quality.max_complementarity_violation = std::max(
-                    quality.max_complementarity_violation, (-dj) * dist);
-            }
-        }
-
-        // Dual multiplier row condition violations in canonical minimization
-        for (int i = 0; i < m; ++i) {
-            const double yi = row_dual[static_cast<size_t>(i)];
-            const double li = original_model.row_lower[static_cast<size_t>(i)];
-            const double ui = original_model.row_upper[static_cast<size_t>(i)];
-
-            if (li <= -1e20 && ui < 1e20) {
-                // <= constraint: y_i should be <= 0 in minimization
-                if (yi > tol::kDualFeasibility) {
-                    quality.max_dual_violation = std::max(quality.max_dual_violation, yi);
-                }
-            } else if (li > -1e20 && ui >= 1e20) {
-                // >= constraint: y_i should be >= 0 in minimization
-                if (yi < -tol::kDualFeasibility) {
-                    quality.max_dual_violation = std::max(quality.max_dual_violation, -yi);
+            if (original_model.col_type.size() > static_cast<size_t>(j) &&
+                original_model.col_type[static_cast<size_t>(j)] == VarType::kInteger) {
+                const double xj = col_value[static_cast<size_t>(j)];
+                const double int_viol = std::abs(xj - std::round(xj));
+                quality.max_integrality_violation = std::max(quality.max_integrality_violation, int_viol);
+                if (int_viol > tol::kPrimalFeasibility) {
+                    quality.is_integer_feasible = false;
                 }
             }
         }
+        quality.is_dual_feasible = true; // Continuous KKT dual conditions do not apply to MILP
+        quality.max_dual_violation = 0.0;
+        quality.max_complementarity_violation = 0.0;
+    } else {
+        quality.is_integer_feasible = true;
+        quality.max_integrality_violation = 0.0;
+        // 4. Dual feasibility & complementary slackness (if dual vector present)
+        if (static_cast<int>(row_dual.size()) == m) {
+            std::vector<double> Aty(static_cast<size_t>(n), 0.0);
+            original_model.A.multiply_transpose(row_dual, Aty);
 
-        quality.is_dual_feasible = (quality.max_dual_violation <= tol::kDualFeasibility);
+            const double sense_factor = (original_model.sense == ObjSense::kMaximize) ? -1.0 : 1.0;
+
+            col_dual.resize(static_cast<size_t>(n));
+            for (int j = 0; j < n; ++j) {
+                const double c_eff = sense_factor * original_model.c[static_cast<size_t>(j)];
+                const double dj = c_eff - Aty[static_cast<size_t>(j)];
+                col_dual[static_cast<size_t>(j)] = (original_model.sense == ObjSense::kMaximize) ? -dj : dj;
+
+                const double xj = col_value[static_cast<size_t>(j)];
+                const double lj = original_model.col_lower[static_cast<size_t>(j)];
+                const double uj = original_model.col_upper[static_cast<size_t>(j)];
+
+                // Reduced cost violations in canonical minimization
+                if (xj < uj - tol::kPrimalFeasibility && dj < -tol::kDualFeasibility) {
+                    quality.max_dual_violation = std::max(quality.max_dual_violation, -dj);
+                }
+                if (xj > lj + tol::kPrimalFeasibility && dj > tol::kDualFeasibility) {
+                    quality.max_dual_violation = std::max(quality.max_dual_violation, dj);
+                }
+
+                // Complementarity
+                if (dj > tol::kDualFeasibility) {
+                    const double dist = std::abs(xj - lj);
+                    quality.max_complementarity_violation = std::max(
+                        quality.max_complementarity_violation, dj * dist);
+                } else if (dj < -tol::kDualFeasibility) {
+                    const double dist = std::abs(xj - uj);
+                    quality.max_complementarity_violation = std::max(
+                        quality.max_complementarity_violation, (-dj) * dist);
+                }
+            }
+
+            // Dual multiplier row condition violations in canonical minimization
+            for (int i = 0; i < m; ++i) {
+                const double yi = row_dual[static_cast<size_t>(i)];
+                const double li = original_model.row_lower[static_cast<size_t>(i)];
+                const double ui = original_model.row_upper[static_cast<size_t>(i)];
+
+                if (li <= -1e20 && ui < 1e20) {
+                    // <= constraint: y_i should be <= 0 in minimization
+                    if (yi > tol::kDualFeasibility) {
+                        quality.max_dual_violation = std::max(quality.max_dual_violation, yi);
+                    }
+                } else if (li > -1e20 && ui >= 1e20) {
+                    // >= constraint: y_i should be >= 0 in minimization
+                    if (yi < -tol::kDualFeasibility) {
+                        quality.max_dual_violation = std::max(quality.max_dual_violation, -yi);
+                    }
+                }
+            }
+
+            quality.is_dual_feasible = (quality.max_dual_violation <= tol::kDualFeasibility);
+        }
     }
 }
 
 Solution solve(const Model& model, const Options& options) {
     const auto start_time = std::chrono::high_resolution_clock::now();
-    model.validate();
+    try {
+        model.validate();
+    } catch (const std::exception& e) {
+        Solution sol;
+        sol.status = SolveStatus::kModelError;
+        sol.status_message = std::string("Model validation error: ") + e.what();
+        sol.solve_time_seconds = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_time).count();
+        return sol;
+    }
 
     if (model.classify() == ProblemClass::kQp || model.classify() == ProblemClass::kMiqp) {
         Solution sol;
@@ -192,12 +253,8 @@ Solution solve(const Model& model, const Options& options) {
         sol.solve_time_seconds = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_time).count();
         return sol;
     }
-    if (model.has_integers()) {
-        Solution sol;
-        sol.status = SolveStatus::kModelError;
-        sol.status_message = "Integer variables are not supported by continuous LP solver";
-        sol.solve_time_seconds = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_time).count();
-        return sol;
+    if (model.has_integers() || options.algorithm == "milp") {
+        return milp::solve_milp(model, options);
     }
 
     if (options.time_limit <= 0.0) {

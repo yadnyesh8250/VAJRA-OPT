@@ -40,6 +40,7 @@ class MPSModel:
         self.col_obj: Dict[str, float] = {}
         self.col_lower: Dict[str, float] = {}
         self.col_upper: Dict[str, float] = {}
+        self.col_integer: Dict[str, bool] = {}
 
 
 def parse_mps_independent(filepath: str) -> MPSModel:
@@ -49,6 +50,7 @@ def parse_mps_independent(filepath: str) -> MPSModel:
         lines = f.readlines()
         
     section = None
+    is_int_marker = False
     
     for raw_line in lines:
         line = raw_line.rstrip()
@@ -104,6 +106,12 @@ def parse_mps_independent(filepath: str) -> MPSModel:
                     model.row_upper[row_name] = math.inf
                     
         elif section == 'COLUMNS':
+            if "'MARKER'" in raw_line.upper():
+                if "'INTORG'" in raw_line.upper():
+                    is_int_marker = True
+                elif "'INTEND'" in raw_line.upper():
+                    is_int_marker = False
+                continue
             col_name = tokens[0]
             if col_name not in model.col_coeffs:
                 model.col_order.append(col_name)
@@ -111,6 +119,7 @@ def parse_mps_independent(filepath: str) -> MPSModel:
                 model.col_obj[col_name] = 0.0
                 model.col_lower[col_name] = 0.0
                 model.col_upper[col_name] = math.inf
+                model.col_integer[col_name] = is_int_marker
                 
             idx = 1
             while idx + 1 < len(tokens):
@@ -174,7 +183,17 @@ def parse_mps_independent(filepath: str) -> MPSModel:
                     b_val = float(tokens[3]) if len(tokens) > 3 else 0.0
                     
                 if col_name in model.col_coeffs:
-                    if b_type == 'UP':
+                    if b_type == 'BV':
+                        model.col_lower[col_name] = 0.0
+                        model.col_upper[col_name] = 1.0
+                        model.col_integer[col_name] = True
+                    elif b_type == 'UI':
+                        model.col_upper[col_name] = b_val
+                        model.col_integer[col_name] = True
+                    elif b_type == 'LI':
+                        model.col_lower[col_name] = b_val
+                        model.col_integer[col_name] = True
+                    elif b_type == 'UP':
                         model.col_upper[col_name] = b_val
                     elif b_type == 'LO':
                         model.col_lower[col_name] = b_val
@@ -232,6 +251,14 @@ def parse_lp_independent(filepath: str) -> MPSModel:
             continue
         elif tok_upper == "BOUNDS":
             section = "BOUNDS"
+            i += 1
+            continue
+        elif tok_upper in ("GENERALS", "GEN", "INTEGERS", "INT"):
+            section = "GENERALS"
+            i += 1
+            continue
+        elif tok_upper in ("BINARIES", "BINARY", "BIN"):
+            section = "BINARIES"
             i += 1
             continue
         elif tok_upper == "END":
@@ -360,6 +387,20 @@ def parse_lp_independent(filepath: str) -> MPSModel:
                     idx += 3
                 else:
                     idx += 1
+        elif section == "GENERALS":
+            while i < len(tokens) and tokens[i].upper() not in ("END", "BINARIES", "BINARY", "BIN", "BOUNDS"):
+                var = tokens[i]
+                if var in model.col_lower:
+                    model.col_integer[var] = True
+                i += 1
+        elif section == "BINARIES":
+            while i < len(tokens) and tokens[i].upper() not in ("END", "GENERALS", "GEN", "INTEGERS", "INT", "BOUNDS"):
+                var = tokens[i]
+                if var in model.col_lower:
+                    model.col_integer[var] = True
+                    model.col_lower[var] = 0.0
+                    model.col_upper[var] = 1.0
+                i += 1
     return model
 
 
@@ -367,6 +408,14 @@ class Solution:
     def __init__(self):
         self.status: str = ""
         self.reported_objective: float = 0.0
+        self.has_incumbent: Optional[bool] = None
+        self.best_dual_bound: Optional[float] = None
+        self.absolute_gap: Optional[float] = None
+        self.relative_gap: Optional[float] = None
+        self.search_completed: Optional[bool] = None
+        self.termination_reason: str = ""
+        self.nodes: int = 0
+        self.open_nodes: int = 0
         self.col_values: Dict[str, float] = {}
         self.col_duals: Dict[str, float] = {}
         self.row_values: Dict[str, float] = {}
@@ -399,6 +448,39 @@ def parse_solution_independent(filepath: str, model: MPSModel) -> Solution:
                     if math.isnan(val) or math.isinf(val):
                         raise ValueError(f"Malformed objective float at line {line_num}")
                     sol.reported_objective = val
+            elif "Best Dual Bound:" in line:
+                parts = line.split()
+                if len(parts) >= 4:
+                    sol.best_dual_bound = float(parts[-1])
+            elif "Has Incumbent:" in line:
+                parts = line.split()
+                if len(parts) >= 3:
+                    sol.has_incumbent = (parts[-1].lower() == "true")
+            elif "Absolute Gap:" in line:
+                parts = line.split()
+                if len(parts) >= 3:
+                    sol.absolute_gap = float(parts[-1])
+            elif "Relative Gap:" in line:
+                parts = line.split()
+                if len(parts) >= 3:
+                    sol.relative_gap = float(parts[-1])
+            elif "Search Completed:" in line:
+                parts = line.split()
+                if len(parts) >= 3:
+                    sol.search_completed = (parts[-1].lower() == "true")
+            elif "Termination Reason:" in line:
+                prefix = "# Termination Reason:"
+                p = line.find(prefix)
+                if p != -1:
+                    sol.termination_reason = line[p + len(prefix):].strip()
+            elif "Open Nodes:" in line:
+                parts = line.split()
+                if len(parts) >= 3:
+                    sol.open_nodes = int(parts[-1])
+            elif "Nodes:" in line:
+                parts = line.split()
+                if len(parts) >= 2:
+                    sol.nodes = int(parts[-1])
             elif "Columns (Variables)" in line:
                 in_columns = True
                 in_rows = False
@@ -413,6 +495,13 @@ def parse_solution_independent(filepath: str, model: MPSModel) -> Solution:
             
         if in_columns:
             var_name = tokens[0]
+            if var_name not in model.col_coeffs:
+                # Support fallback c{j} naming for unnamed models
+                m = re.match(r"^c(\d+)$", var_name)
+                if m:
+                    idx = int(m.group(1))
+                    if idx < len(model.col_order):
+                        var_name = model.col_order[idx]
             if var_name not in model.col_coeffs:
                 raise ValueError(f"Unknown variable in solution file at line {line_num}: '{var_name}'")
             if var_name in sol.col_values:
@@ -435,6 +524,13 @@ def parse_solution_independent(filepath: str, model: MPSModel) -> Solution:
                 
         elif in_rows:
             r_name = tokens[0]
+            if r_name not in model.row_types:
+                # Support fallback r{i} naming for unnamed models
+                m = re.match(r"^r(\d+)$", r_name)
+                if m:
+                    idx = int(m.group(1))
+                    if idx < len(model.row_order):
+                        r_name = model.row_order[idx]
             if r_name not in model.row_types:
                 raise ValueError(f"Unknown row in solution file at line {line_num}: '{r_name}'")
             if r_name in sol.row_values:
@@ -475,8 +571,8 @@ def verify_sovereign(model_path: str, sol_path: str, tol: float = 1e-6) -> Tuple
     
     violations = []
     
-    if sol.status != "OPTIMAL":
-        violations.append(f"Solution status is not OPTIMAL (reported: {sol.status})")
+    if sol.status not in ("OPTIMAL", "FEASIBLE"):
+        violations.append(f"Solution status is not OPTIMAL or FEASIBLE (reported: {sol.status})")
         return False, violations
         
     # 1. Check Column Bounds: l_j <= x_j <= u_j
@@ -526,10 +622,44 @@ def verify_sovereign(model_path: str, sol_path: str, tol: float = 1e-6) -> Tuple
     if obj_err / obj_scale > tol:
         violations.append(f"Objective value mismatch: reported={sol.reported_objective:.10e}, recomputed={recomputed_obj:.10e}, rel_err={obj_err/obj_scale:.2e}")
         
-    # 4. Check Dual Feasibility & Complementary Slackness (if duals provided)
+    # 4. Check Integrality for MILP & Global Proof Metadata
+    is_milp = any(model.col_integer.get(col, False) for col in model.col_order)
+    if is_milp:
+        # Check integer feasibility
+        for col in model.col_order:
+            if model.col_integer.get(col, False):
+                xj = sol.col_values[col]
+                int_diff = abs(xj - round(xj))
+                if int_diff > max(tol, 1e-5):
+                    violations.append(f"Column '{col}' integrality violated: x={xj:.7e} (diff={int_diff:.2e})")
+
+        if sol.status == "OPTIMAL":
+            # 1. Incumbent check
+            if sol.has_incumbent is False:
+                violations.append("OPTIMAL status claimed but solution reports has_incumbent is False")
+            # 2. Search completed check
+            if sol.search_completed is None:
+                violations.append("OPTIMAL status claimed but solution file missing '# Search Completed:' metadata")
+            elif not sol.search_completed:
+                violations.append(f"OPTIMAL status claimed but search was not completed (open nodes: {sol.open_nodes})")
+            # 3. Best dual bound check
+            if sol.best_dual_bound is None:
+                violations.append("OPTIMAL status claimed but solution file missing '# Best Dual Bound:' metadata")
+            elif math.isnan(sol.best_dual_bound) or math.isinf(sol.best_dual_bound):
+                violations.append(f"OPTIMAL status claimed but best dual bound is non-finite: {sol.best_dual_bound}")
+            else:
+                # 4. MIP Gap verification
+                abs_gap = abs(sol.reported_objective - sol.best_dual_bound)
+                scale = max(1.0, abs(sol.reported_objective))
+                rel_gap = abs_gap / scale
+                mip_tol = max(tol, 1e-4)
+                if abs_gap > mip_tol and rel_gap > mip_tol:
+                    violations.append(f"Global MIP gap not proven: incumbent={sol.reported_objective}, best_bound={sol.best_dual_bound}, abs_gap={abs_gap:.2e}, rel_gap={rel_gap:.2e} > tol={mip_tol:.2e}")
+
+    # 5. Check Dual Feasibility & Complementary Slackness (Continuous LP only)
     max_dual_viol = 0.0
     max_cs_viol = 0.0
-    if sol.row_duals and sol.col_duals:
+    if not is_milp and sol.status == "OPTIMAL" and sol.row_duals and sol.col_duals:
         for col in model.col_order:
             cj = model.col_obj.get(col, 0.0)
             a_trans_y = 0.0
@@ -575,7 +705,15 @@ def main():
         sys.exit(1)
         
     if passed:
-        print("\n>>> [VERIFIED OPTIMAL] Sovereign independent certificate check PASSED with 0 violations! <<<")
+        if model_path.lower().endswith('.lp'):
+            m = parse_lp_independent(model_path)
+        else:
+            m = parse_mps_independent(model_path)
+        sol = parse_solution_independent(sol_path, m)
+        if any(m.col_integer.get(col, False) for col in m.col_order) and sol.status != "OPTIMAL":
+            print(f"\n>>> [VERIFIED FEASIBLE] Sovereign independent certificate check PASSED ({sol.status}, Global bound unproven). <<<")
+        else:
+            print("\n>>> [VERIFIED OPTIMAL] Sovereign independent certificate check PASSED with 0 violations! <<<")
         sys.exit(0)
     else:
         print(f"\n>>> [FAILED] Solution violated {len(violations)} certificate conditions: <<<")

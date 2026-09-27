@@ -65,14 +65,14 @@ std::string json_escape(const std::string& s) {
 // Get column name with automatic fallback for unnamed models.
 std::string col_name(const Model& model, int j) {
     const auto idx = static_cast<size_t>(j);
-    if (idx < model.col_names.size()) return model.col_names[idx];
+    if (idx < model.col_names.size() && !model.col_names[idx].empty()) return model.col_names[idx];
     return "c" + std::to_string(j);
 }
 
 // Get row name with automatic fallback for unnamed models.
 std::string row_name(const Model& model, int i) {
     const auto idx = static_cast<size_t>(i);
-    if (idx < model.row_names.size()) return model.row_names[idx];
+    if (idx < model.row_names.size() && !model.row_names[idx].empty()) return model.row_names[idx];
     return "r" + std::to_string(i);
 }
 
@@ -97,10 +97,16 @@ void write_solution(const Solution& solution, const Model& model, const std::str
     file << "# Git Commit: " << INDUS_GIT_COMMIT << "\n";
     file << "# Status: " << status_to_str(solution.status) << "\n";
     file << "# Message: " << solution.status_message << "\n";
+    file << "# Termination Reason: " << (solution.termination_reason.empty() ? solution.status_message : solution.termination_reason) << "\n";
     file << "# Objective: " << solution.objective_value << "\n";
     file << "# Best Dual Bound: " << solution.best_dual_bound << "\n";
+    file << "# Has Incumbent: " << (solution.has_incumbent ? "true" : "false") << "\n";
+    file << "# Absolute Gap: " << solution.absolute_gap << "\n";
+    file << "# Relative Gap: " << solution.relative_gap << "\n";
     file << "# Iterations: " << solution.iterations << "\n";
     file << "# Nodes: " << solution.nodes << "\n";
+    file << "# Open Nodes: " << solution.open_nodes << "\n";
+    file << "# Search Completed: " << (solution.search_completed ? "true" : "false") << "\n";
     file << "# Solve Time: " << solution.solve_time_seconds << " s\n";
     file << "# Primal Feasible: " << (solution.quality.is_primal_feasible ? "true" : "false") << "\n";
     file << "# Dual Feasible: " << (solution.quality.is_dual_feasible ? "true" : "false") << "\n";
@@ -160,11 +166,16 @@ void write_json(const Solution& solution, const Model& model, const std::string&
     file << "  \"git_commit\": \"" << json_escape(INDUS_GIT_COMMIT) << "\",\n";
     file << "  \"status\": \"" << status_to_str(solution.status) << "\",\n";
     file << "  \"status_message\": \"" << json_escape(solution.status_message) << "\",\n";
+    file << "  \"termination_reason\": \"" << json_escape(solution.termination_reason.empty() ? solution.status_message : solution.termination_reason) << "\",\n";
     file << "  \"objective_value\": " << solution.objective_value << ",\n";
     file << "  \"best_dual_bound\": " << solution.best_dual_bound << ",\n";
+    file << "  \"has_incumbent\": " << (solution.has_incumbent ? "true" : "false") << ",\n";
+    file << "  \"absolute_gap\": " << solution.absolute_gap << ",\n";
     file << "  \"relative_gap\": " << solution.relative_gap << ",\n";
     file << "  \"iterations\": " << solution.iterations << ",\n";
     file << "  \"nodes\": " << solution.nodes << ",\n";
+    file << "  \"open_nodes\": " << solution.open_nodes << ",\n";
+    file << "  \"search_completed\": " << (solution.search_completed ? "true" : "false") << ",\n";
     file << "  \"solve_time_seconds\": " << solution.solve_time_seconds << ",\n";
 
     file << "  \"quality\": {\n";

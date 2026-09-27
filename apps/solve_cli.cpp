@@ -1,5 +1,6 @@
 #include "indus/io.hpp"
 #include "indus/model.hpp"
+#include "indus/milp.hpp"
 #include "indus/options.hpp"
 #include "indus/verifier.hpp"
 #include "indus/gpu.hpp"
@@ -28,9 +29,13 @@ void print_usage(const char* prog) {
               << "      --sol <file>          Export solution in .sol text format\n"
               << "      --json <file>         Export solution and telemetry in JSON format\n"
               << "  -a, --algorithm <algo>    Algorithm: auto, dual_simplex, primal_simplex,\n"
-              << "                            simplex, pdhg_cpu, pdhg_cuda, pdhg (default: auto)\n"
+              << "                            simplex, pdhg_cpu, pdhg_cuda, pdhg, milp (default: auto)\n"
               << "      --time-limit <sec>    Time limit in seconds (default: 1e20 / unlimited)\n"
               << "      --iter-limit <N>      Iteration limit (default: 1000000; 50000 for PDHG)\n"
+              << "      --node-limit <N>      Node limit for MILP branch-and-bound (default: 500000)\n"
+              << "      --mip-gap <val>       Relative MIP gap tolerance (default: 1e-4)\n"
+              << "      --abs-gap <val>       Absolute MIP gap tolerance (default: 1e-6)\n"
+              << "      --integer-tol <val>   Integrality tolerance (default: 1e-5)\n"
               << "      --tol <val>           Feasibility and optimality tolerance (default: 1e-4)\n"
               << "      --presolve            Enable presolve reductions (default: enabled)\n"
               << "      --no-presolve         Disable presolve reductions\n"
@@ -42,6 +47,7 @@ void print_usage(const char* prog) {
               << "Examples:\n"
               << "  " << prog << " --input model.mps --output solution.json\n"
               << "  " << prog << " --input model.lp --algorithm dual_simplex\n"
+              << "  " << prog << " --input model.mps --algorithm milp --node-limit 1000\n"
               << "  " << prog << " --input model.mps --algorithm pdhg_cpu --time-limit 60\n"
               << "  " << prog << " --input model.mps --algorithm pdhg_cuda --output out.sol\n";
 }
@@ -66,6 +72,10 @@ int main(int argc, char* argv[]) {
     std::string algorithm = "auto";
     double time_limit = 1e20;
     int64_t iter_limit = -1; // -1 means use solver default
+    int64_t node_limit = 500000;
+    double mip_relative_gap = 1e-4;
+    double mip_absolute_gap = 1e-6;
+    double integer_tol = 1e-5;
     double tol = 1e-4;
     bool enable_presolve = true;
     bool enable_scaling = true;
@@ -90,6 +100,14 @@ int main(int argc, char* argv[]) {
             time_limit = std::stod(argv[++i]);
         } else if ((arg == "--iter-limit" || arg == "--iteration-limit") && i + 1 < argc) {
             iter_limit = std::stoll(argv[++i]);
+        } else if (arg == "--node-limit" && i + 1 < argc) {
+            node_limit = std::stoll(argv[++i]);
+        } else if ((arg == "--mip-gap" || arg == "--relative-gap") && i + 1 < argc) {
+            mip_relative_gap = std::stod(argv[++i]);
+        } else if ((arg == "--abs-gap" || arg == "--absolute-gap") && i + 1 < argc) {
+            mip_absolute_gap = std::stod(argv[++i]);
+        } else if (arg == "--integer-tol" && i + 1 < argc) {
+            integer_tol = std::stod(argv[++i]);
         } else if ((arg == "--tol" || arg == "--tolerance") && i + 1 < argc) {
             tol = std::stod(argv[++i]);
         } else if (arg == "--presolve") {
@@ -178,9 +196,26 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
+    const bool is_milp_problem = (model.has_integers() || algorithm == "milp");
+    int num_integers = 0;
+    int num_binaries = 0;
+    for (int j = 0; j < model.num_cols; ++j) {
+        if (model.col_type.size() > static_cast<size_t>(j) &&
+            model.col_type[static_cast<size_t>(j)] == indus::VarType::kInteger) {
+            num_integers++;
+            if (model.col_lower[static_cast<size_t>(j)] >= 0.0 && model.col_upper[static_cast<size_t>(j)] <= 1.0) {
+                num_binaries++;
+            }
+        }
+    }
+
     std::cout << "  Model Name      : " << (model.name.empty() ? "(unnamed)" : model.name) << "\n";
+    std::cout << "  Problem Class   : " << (is_milp_problem ? "MILP (Mixed-Integer Linear Program)" : "LP (Continuous Linear Program)") << "\n";
     std::cout << "  Rows            : " << model.num_rows << "\n";
     std::cout << "  Columns         : " << model.num_cols << "\n";
+    if (is_milp_problem) {
+        std::cout << "  Integer Vars    : " << num_integers << " (Binary: " << num_binaries << ")\n";
+    }
     std::cout << "  Nonzeros (NNZ)  : " << model.A.nnz() << "\n";
     std::cout << "  Objective Sense : " << (model.sense == indus::ObjSense::kMaximize ? "MAXIMIZE" : "MINIMIZE") << "\n\n";
 
@@ -190,9 +225,16 @@ int main(int argc, char* argv[]) {
     options.enable_scaling = enable_scaling;
     options.time_limit = time_limit;
     options.set("tolerance", tol);
+    options.node_limit = node_limit;
+    options.mip_relative_gap = mip_relative_gap;
+    options.mip_absolute_gap = mip_absolute_gap;
+    options.integer_tolerance = integer_tol;
 
     std::string backend_name;
-    if (algorithm == "pdhg_cuda") {
+    if (algorithm == "milp" || is_milp_problem) {
+        options.algorithm = "milp";
+        backend_name = "Branch-and-Bound Native MILP";
+    } else if (algorithm == "pdhg_cuda") {
         if (!dev_info.available) {
             std::cout << "[HARDWARE NOTICE] Requested algorithm 'pdhg_cuda', but no discrete CUDA device is available.\n"
                       << "                  Falling back cleanly to pure CPU PDHG solver (SIMD/Warp reference).\n\n";
@@ -223,7 +265,13 @@ int main(int argc, char* argv[]) {
     std::cout << "[SOLVING] Backend: " << backend_name << "\n";
     std::cout << "  Presolve        : " << (enable_presolve ? "Enabled" : "Disabled") << "\n";
     std::cout << "  Scaling         : " << (enable_scaling ? "Enabled (Ruiz)" : "Disabled") << "\n";
-    std::cout << "  Iteration Limit : " << options.iteration_limit << "\n";
+    if (is_milp_problem) {
+        std::cout << "  Node Limit      : " << options.node_limit << "\n";
+        std::cout << "  MIP Rel Gap Tol : " << options.mip_relative_gap << "\n";
+        std::cout << "  Integrality Tol : " << options.integer_tolerance << "\n";
+    } else {
+        std::cout << "  Iteration Limit : " << options.iteration_limit << "\n";
+    }
     std::cout << "  Tolerance       : " << tol << "\n\n";
 
     const auto t_start = std::chrono::high_resolution_clock::now();
@@ -249,10 +297,25 @@ int main(int argc, char* argv[]) {
               << std::setw(26) << "  Objective Value:"
               << std::fixed << std::setprecision(12) << sol.objective_value << "\n"
               << std::setw(26) << "  Solve Time (s):"
-              << std::fixed << std::setprecision(6) << sol.solve_time_seconds << " (wall clock: " << elapsed_sec << " s)\n"
-              << std::setw(26) << "  Iterations:"
-              << sol.iterations << "\n"
-              << std::setw(26) << "  Algorithm Used:"
+              << std::fixed << std::setprecision(6) << sol.solve_time_seconds << " (wall clock: " << elapsed_sec << " s)\n";
+
+    if (is_milp_problem) {
+        std::cout << std::setw(26) << "  Nodes Explored:"
+                  << sol.nodes << "\n"
+                  << std::setw(26) << "  Open Nodes:"
+                  << sol.open_nodes << "\n"
+                  << std::setw(26) << "  Best Bound:"
+                  << std::fixed << std::setprecision(12) << sol.best_dual_bound << "\n"
+                  << std::setw(26) << "  Absolute Gap:"
+                  << std::scientific << std::setprecision(4) << sol.absolute_gap << "\n"
+                  << std::setw(26) << "  Relative MIP Gap:"
+                  << std::scientific << std::setprecision(4) << sol.relative_gap << "\n";
+    } else {
+        std::cout << std::setw(26) << "  Iterations:"
+                  << sol.iterations << "\n";
+    }
+
+    std::cout << std::setw(26) << "  Algorithm Used:"
               << sol.algorithm_used << "\n";
 
     if (enable_presolve && sol.presolve_num_rows >= 0) {
@@ -264,26 +327,49 @@ int main(int argc, char* argv[]) {
 
     // Solution verification
     bool verification_passed = true;
-    if (verify && (sol.status == indus::SolveStatus::kOptimal || sol.status == indus::SolveStatus::kFeasible)) {
+    indus::verifier::VerificationResult vres;
+    if (verify && (sol.status == indus::SolveStatus::kOptimal || sol.status == indus::SolveStatus::kFeasible || sol.status == indus::SolveStatus::kNodeLimit)) {
         std::cout << "\n[INDEPENDENT SOLUTION VERIFICATION]\n";
-        indus::verifier::VerificationResult vres = indus::verifier::verify_solution(model, sol, tol);
-        std::cout << std::left
-                  << std::setw(26) << "  Primal Feasibility:"
-                  << (vres.primal_feasible ? "PASSED" : "FAILED")
-                  << " (max viol: " << std::scientific << std::setprecision(2) << vres.max_primal_violation << ")\n"
-                  << std::setw(26) << "  Dual Feasibility:"
-                  << (vres.dual_feasible ? "PASSED" : "FAILED")
-                  << " (max viol: " << std::scientific << std::setprecision(2) << vres.max_dual_violation << ")\n"
-                  << std::setw(26) << "  Complementarity:"
-                  << (vres.max_complementarity_violation <= tol ? "PASSED" : "FAILED")
-                  << " (max viol: " << std::scientific << std::setprecision(2) << vres.max_complementarity_violation << ")\n"
-                  << std::setw(26) << "  Recomputed Obj:"
-                  << std::fixed << std::setprecision(12) << vres.recomputed_objective << "\n"
-                  << std::setw(26) << "  Obj Discrepancy:"
-                  << std::scientific << std::setprecision(2) << vres.objective_discrepancy << "\n"
-                  << std::setw(26) << "  Verification Status:"
-                  << (vres.passed ? "PASSED" : "FAILED") << "\n";
-        verification_passed = vres.passed;
+        vres = indus::verifier::verify_solution(model, sol, tol);
+        if (vres.is_milp) {
+            std::cout << std::left
+                      << std::setw(26) << "  Primal Feasibility:"
+                      << (vres.primal_feasible ? "PASSED" : "FAILED")
+                      << " (max viol: " << std::scientific << std::setprecision(2) << vres.max_primal_violation << ")\n"
+                      << std::setw(26) << "  Bounds Feasibility:"
+                      << (vres.bounds_feasible ? "PASSED" : "FAILED")
+                      << " (max viol: " << std::scientific << std::setprecision(2) << vres.max_bound_violation << ")\n"
+                      << std::setw(26) << "  Integrality:"
+                      << (vres.integer_feasible ? "PASSED" : "FAILED")
+                      << " (max viol: " << std::scientific << std::setprecision(2) << vres.max_integrality_violation << ")\n"
+                      << std::setw(26) << "  Recomputed Obj:"
+                      << std::fixed << std::setprecision(12) << vres.recomputed_objective << "\n"
+                      << std::setw(26) << "  Obj Discrepancy:"
+                      << std::scientific << std::setprecision(2) << vres.objective_discrepancy << "\n"
+                      << std::setw(26) << "  Global Bound Proof:"
+                      << (vres.optimality_proven ? "VERIFIED (Gap <= tol)" : "UNPROVEN / GAP EXCEEDED") << "\n"
+                      << std::setw(26) << "  Verification Status:"
+                      << (vres.passed ? (vres.optimality_proven ? "PASSED (Optimal)" : "PASSED (Feasible Incumbent)") : "FAILED") << "\n";
+            verification_passed = vres.passed;
+        } else {
+            std::cout << std::left
+                      << std::setw(26) << "  Primal Feasibility:"
+                      << (vres.primal_feasible ? "PASSED" : "FAILED")
+                      << " (max viol: " << std::scientific << std::setprecision(2) << vres.max_primal_violation << ")\n"
+                      << std::setw(26) << "  Dual Feasibility:"
+                      << (vres.dual_feasible ? "PASSED" : "FAILED")
+                      << " (max viol: " << std::scientific << std::setprecision(2) << vres.max_dual_violation << ")\n"
+                      << std::setw(26) << "  Complementarity:"
+                      << (vres.max_complementarity_violation <= tol ? "PASSED" : "FAILED")
+                      << " (max viol: " << std::scientific << std::setprecision(2) << vres.max_complementarity_violation << ")\n"
+                      << std::setw(26) << "  Recomputed Obj:"
+                      << std::fixed << std::setprecision(12) << vres.recomputed_objective << "\n"
+                      << std::setw(26) << "  Obj Discrepancy:"
+                      << std::scientific << std::setprecision(2) << vres.objective_discrepancy << "\n"
+                      << std::setw(26) << "  Verification Status:"
+                      << (vres.passed ? "PASSED" : "FAILED") << "\n";
+            verification_passed = vres.passed;
+        }
     }
 
     // Export solution files
@@ -308,16 +394,19 @@ int main(int argc, char* argv[]) {
 
     // Exit code determination
     if (sol.status == indus::SolveStatus::kOptimal) {
-        if (!sol.quality.is_primal_feasible) {
-            std::cerr << "\n[EXIT] Status is Optimal but primal feasibility check failed.\n";
+        if (!sol.quality.is_primal_feasible || !sol.quality.is_integer_feasible) {
+            std::cerr << "\n[EXIT] Status is Optimal but feasibility check failed.\n";
             return 1;
         }
-        if (verify && !verification_passed) {
-            std::cerr << "\n[EXIT] Independent mathematical verification failed.\n";
+        if (verify && (!verification_passed || (vres.is_milp && !vres.optimality_proven))) {
+            std::cerr << "\n[EXIT] Independent mathematical verification or MILP optimality proof failed.\n";
             return 1;
         }
         std::cout << "\n[EXIT] Optimization successfully converged to verified optimal solution.\n";
         return 0;
+    } else if (sol.status == indus::SolveStatus::kNodeLimit) {
+        std::cerr << "\n[EXIT] Solver terminated due to branch-and-bound node limit (" << sol.nodes << " nodes explored).\n";
+        return 1;
     } else if (sol.status == indus::SolveStatus::kIterationLimit || sol.status == indus::SolveStatus::kTimeLimit) {
         std::cerr << "\n[EXIT] Solver terminated due to iteration or time limit.\n";
         return 1;

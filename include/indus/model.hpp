@@ -57,10 +57,12 @@ struct SolutionQuality {
     double max_primal_violation = 0.0;
     double max_dual_violation = 0.0;
     double max_complementarity_violation = 0.0;
+    double max_integrality_violation = 0.0;
     double duality_gap = 0.0;
     double relative_duality_gap = 0.0;
     bool is_primal_feasible = false;
     bool is_dual_feasible = false;
+    bool is_integer_feasible = true;
 };
 
 class Solution {
@@ -71,6 +73,12 @@ public:
     double objective_value = 0.0;
     double best_dual_bound = 0.0;
     double relative_gap = 0.0;
+    double absolute_gap = 0.0;
+    int64_t open_nodes = 0;
+    int64_t pruned_nodes = 0;
+    bool has_incumbent = false;
+    bool search_completed = false;
+    std::string termination_reason;
 
     // Primal vector x and Row activity Ax
     std::vector<double> col_value;

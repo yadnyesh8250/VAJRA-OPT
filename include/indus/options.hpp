@@ -27,11 +27,14 @@ public:
     int64_t node_limit = 500000;
     double mip_relative_gap = 1e-4;
     double mip_absolute_gap = 1e-6;
+    double integer_tolerance = 1e-5;
+    std::string branching_strategy = "most_fractional"; // "most_fractional"
+    std::string node_selection = "best_bound";          // "best_bound"
     bool enable_presolve = true;
     bool enable_scaling = true;
     bool enable_root_cuts = false;
     bool use_gpu = false;
-    std::string algorithm = "auto"; // "auto", "simplex", "dual_simplex", "primal_simplex", "pdhg", "ipm"
+    std::string algorithm = "auto"; // "auto", "simplex", "dual_simplex", "primal_simplex", "pdhg", "milp"
 
 private:
     std::unordered_map<std::string, std::variant<std::string, double, int64_t, bool>> values_;

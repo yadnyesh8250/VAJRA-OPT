@@ -73,7 +73,21 @@
     - Published root `README.md` with architectural blueprints, build instructions, test commands, benchmark workflows, platform differences, and honest CUDA hardware status.
   - *Gate Check:* 9/9 CTest test suites pass 100% green; 22/22 Netlib and MRPL benchmark instances verified with zero solver warnings; 10/10 reliability suites pass; zero foreign solver symbols [PASSED].
 
-- [-] **FUTURE SCOPE (Unexpanded per Phase 6 Release Hardening Directives):**
-  - Continuous LP solver is hardened and sovereignly certified.
-  - IPM, Convex QP, and MILP branch-and-bound remain unexpanded to preserve solver reliability and stability.
+- [X] **PHASE 7: Native MILP Support Through Branch-and-Bound (Corrective Audit Hardened)**
+  - [X] `include/indus/milp.hpp`, `src/solvers/milp/milp_solver.cpp` (Deterministic Branch-and-Bound algorithm with min/max best-bound priority queues and node ID tie-breaking).
+  - [X] **LP Relaxation Status Safety (Audit Finding #1):** Only an `kOptimal` LP relaxation can update dual bounds or enable bound pruning. Non-optimal relaxations (`kFeasible`, `kIterationLimit`, `kTimeLimit`, `kNumericalError`) strictly terminate the MILP with honest unverified/limit status, never prune the node, and never claim `kOptimal`.
+  - [X] **Cold LP relaxation dispatcher:** runs each node via dual simplex with `enable_presolve = false` per user correction #2 & #3 (no doubleton substitutions or variable eliminations on discrete nodes) and forwards caller `iteration_limit`.
+  - [X] **Integrality branching:** most-fractional variable selection with deterministic index tie-breaking; left ($x_j \le \lfloor x_j^* \rfloor$) and right ($x_j \ge \lceil x_j^* \rceil$) child node creation.
+  - [X] **Tree pruning:** exact pruning strictly by mathematical infeasibility, bound pruning against incumbent with gap tolerance, and pruning by integrality with incumbent update.
+  - [X] **MILP Proof Metadata Preservation (Audit Finding #2):** `Solution`, `.sol`, and JSON export preserve `has_incumbent`, `best_dual_bound`, `absolute_gap`, `relative_gap`, `nodes`, `open_nodes`, `search_completed`, and `termination_reason`.
+  - [X] **External Verification & Independent Global Bound Proof (Audit Finding #3):** Both `verifier::verify_solution_file()` and `validator/independent_verifier.py` parse proof metadata headers, independently recompute MIP gaps against reported bounds, require `search_completed == true`, and strictly reject `OPTIMAL` claims if search completion/proof metadata is missing or if MIP gap is unproven. Distinct `[VERIFIED MILP FEASIBLE (BOUND UNPROVEN)]` status assigned when incumbent exists without completed tree proof.
+  - [X] **Unnamed & Partially Named Model Robustness (Audit Finding #4):** Harmonized `c{j}` and `r{i}` fallback naming across `writer.cpp`, `verifier.cpp`, `.sol` parsing, and Python verifier.
+  - [X] **Model Validation (Audit Finding #5):** `Model::validate()` strictly checks `col_type.size() == num_cols`, rejects NaN/Inf bounds on integer variables, enforces finite valid integer ranges, and `indus::solve()` returns `kModelError` on invalid integrality metadata.
+  - [X] **Stress & Edge-Case Coverage (Audit Finding #6):** 13/13 MILP test suite (`tests/test_milp.cpp`) covering: binary knapsack, Correction #6 model with node limit and unproven optimality, general integer production planning, mixed-integer minimization, integer infeasibility proof, integrality violation rejection, root node optimality, LP iteration-limit handling, node-limit without incumbent, time-limit handling, invalid model metadata validation, unnamed model export and re-verification, and multi-node branching tree.
+  - *Gate Check:* 10/10 CTest suites pass 100% green; 13/13 MILP tests pass; clean build in `/tmp/vajra-phase7-final` 100% clean; zero foreign solver symbols [PASSED].
+
+- [-] **FUTURE SCOPE (Maintained Sovereign Scope):**
+  - Continuous LP solver and Native MILP Branch-and-Bound solver are hardened and sovereignly certified.
+  - Quadratic programming (QP / MIQP) architecturally classified but deferred.
   - Physical GPU execution pending dedicated NVIDIA hardware testbed.
+

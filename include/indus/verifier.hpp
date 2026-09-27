@@ -13,6 +13,12 @@ struct VerificationResult {
     bool bounds_feasible = false;
     bool objective_matches = false;
 
+    bool is_milp = false;
+    bool integer_feasible = true;
+    double max_integrality_violation = 0.0;
+    bool optimality_proven = false;
+    double mip_gap = 0.0;
+
     double max_primal_violation = 0.0;
     double max_bound_violation = 0.0;
     double max_row_violation = 0.0;
@@ -34,7 +40,10 @@ VerificationResult verify_solution_file(const Model& model, const std::string& s
 // Verifies model file (.mps or .lp) and .sol file completely independently
 VerificationResult verify_files(const std::string& model_filepath, const std::string& sol_filepath, double tol = 1e-6);
 
-// Verifies in-memory Model and Solution
+// Verifies in-memory Model and Solution (audits integrality if model.has_integers())
 VerificationResult verify_solution(const Model& model, const Solution& solution, double tol = 1e-6);
+
+// Verifies MILP global optimality proof (incumbent exists, gap within tolerance, search completed)
+bool verify_milp_optimality(const Solution& solution, double mip_tolerance = 1e-4);
 
 } // namespace indus::verifier

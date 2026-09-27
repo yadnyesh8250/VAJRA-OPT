@@ -125,8 +125,27 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
                                  " vs recomputed " + std::to_string(res.recomputed_objective));
     }
 
-    // 5. Dual Feasibility & Complementary Slackness (if duals provided)
-    if (static_cast<int>(solution.row_dual.size()) == m) {
+    // 5. Integrality Check for MILP Models
+    res.is_milp = model.has_integers();
+    if (res.is_milp) {
+        for (int j = 0; j < n; ++j) {
+            if (model.col_type.size() > static_cast<size_t>(j) &&
+                model.col_type[static_cast<size_t>(j)] == VarType::kInteger) {
+                const double xj = solution.col_value[static_cast<size_t>(j)];
+                const double int_viol = std::abs(xj - std::round(xj));
+                res.max_integrality_violation = std::max(res.max_integrality_violation, int_viol);
+                if (int_viol > tol) {
+                    res.integer_feasible = false;
+                    res.violations.push_back("Variable " + get_col_name(j) +
+                                             " violates integrality: value " + std::to_string(xj) +
+                                             " (violation: " + std::to_string(int_viol) + ")");
+                }
+            }
+        }
+    }
+
+    // 6. Dual Feasibility & Complementary Slackness (Continuous LP only)
+    if (!res.is_milp && static_cast<int>(solution.row_dual.size()) == m) {
         std::vector<double> Aty(static_cast<size_t>(n), 0.0);
         model.A.multiply_transpose(solution.row_dual, Aty);
 
@@ -144,13 +163,13 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
             // If variable can increase (xj < uj), reduced cost must be >= 0 (violation if dj < -tol)
             if (xj < uj - tol && dj < -tol) {
                 res.max_dual_violation = std::max(res.max_dual_violation, -dj);
-                res.violations.push_back("Variable " + model.col_names[static_cast<size_t>(j)] +
+                res.violations.push_back("Variable " + get_col_name(j) +
                                          " can increase but dj < 0: " + std::to_string(dj));
             }
             // If variable can decrease (xj > lj), reduced cost must be <= 0 (violation if dj > tol)
             if (xj > lj + tol && dj > tol) {
                 res.max_dual_violation = std::max(res.max_dual_violation, dj);
-                res.violations.push_back("Variable " + model.col_names[static_cast<size_t>(j)] +
+                res.violations.push_back("Variable " + get_col_name(j) +
                                          " can decrease but dj > 0: " + std::to_string(dj));
             }
 
@@ -187,19 +206,78 @@ VerificationResult verify_solution(const Model& model, const Solution& solution,
         }
         res.dual_feasible = (res.max_dual_violation <= tol && res.max_complementarity_violation <= tol);
     } else {
-        res.dual_feasible = true; // No dual multipliers to verify
+        res.dual_feasible = true; // No dual multipliers or MILP problem
     }
 
-    res.passed = res.primal_feasible && res.objective_matches && res.dual_feasible && res.violations.empty();
+    if (res.is_milp) {
+        // Solution verification checks feasibility and consistency
+        const bool feasible = res.primal_feasible && res.bounds_feasible && res.integer_feasible &&
+                              res.objective_matches && res.violations.empty();
+        res.optimality_proven = feasible && verify_milp_optimality(solution, tol);
+
+        if (solution.status == SolveStatus::kOptimal) {
+            // Rejects OPTIMAL if search completion/proof metadata is missing or unverified
+            res.passed = res.optimality_proven;
+            if (!res.optimality_proven && feasible) {
+                res.violations.push_back("Status claims OPTIMAL but global optimality proof is incomplete or unverified (missing search_completed, invalid bound, or gap > tolerance)");
+            }
+        } else {
+            // Distinguish FEASIBLE/limit from VERIFIED OPTIMAL
+            res.passed = feasible;
+        }
+    } else {
+        // LP KKT verification checks primal feasibility, dual feasibility, complementarity, bounds, obj
+        res.passed = res.primal_feasible && res.bounds_feasible && res.objective_matches &&
+                     res.dual_feasible && res.violations.empty();
+        res.optimality_proven = res.passed && (solution.status == SolveStatus::kOptimal);
+    }
+
+    res.mip_gap = solution.relative_gap;
 
     std::ostringstream ss;
-    ss << (res.passed ? "[VERIFIED OPTIMAL]" : "[VERIFICATION FAILED]")
-       << " Primal viol: " << res.max_primal_violation
-       << ", Dual viol: " << res.max_dual_violation
-       << ", Obj discrepancy: " << res.objective_discrepancy;
+    if (res.is_milp) {
+        if (!res.passed) {
+            ss << "[MILP VERIFICATION FAILED]";
+        } else if (res.optimality_proven) {
+            ss << "[VERIFIED MILP OPTIMAL]";
+        } else {
+            ss << "[VERIFIED MILP FEASIBLE (BOUND UNPROVEN)]";
+        }
+        ss << " Primal viol: " << res.max_primal_violation
+           << ", Bound viol: " << res.max_bound_violation
+           << ", Integrality viol: " << res.max_integrality_violation
+           << ", Obj discrepancy: " << res.objective_discrepancy
+           << ", MIP Gap: " << res.mip_gap;
+    } else {
+        ss << (res.passed ? "[VERIFIED OPTIMAL]" : "[VERIFICATION FAILED]")
+           << " Primal viol: " << res.max_primal_violation
+           << ", Bound viol: " << res.max_bound_violation
+           << ", Dual viol: " << res.max_dual_violation
+           << ", Obj discrepancy: " << res.objective_discrepancy;
+    }
     res.summary = ss.str();
 
     return res;
+}
+
+bool verify_milp_optimality(const Solution& solution, double mip_tolerance) {
+    // 1. Incumbent exists
+    if (!solution.has_incumbent || solution.col_value.empty()) return false;
+    // 2. Best bound exists and is finite
+    if (std::isnan(solution.best_dual_bound) || std::isinf(solution.best_dual_bound)) return false;
+    // 3. Search must have completed
+    if (!solution.search_completed) return false;
+    // 4. Status must be optimal
+    if (solution.status != SolveStatus::kOptimal) return false;
+    // 5. Independently compute the gap from incumbent objective and best_dual_bound
+    const double indep_abs_gap = std::abs(solution.objective_value - solution.best_dual_bound);
+    const double indep_rel_gap = indep_abs_gap / std::max(1.0, std::abs(solution.objective_value));
+    if (indep_abs_gap > mip_tolerance && indep_rel_gap > mip_tolerance) return false;
+    // 6. Also verify that reported gaps in solution satisfy tolerance
+    const double abs_gap = solution.absolute_gap;
+    const double rel_gap = solution.relative_gap;
+    if (abs_gap > mip_tolerance && rel_gap > mip_tolerance) return false;
+    return true;
 }
 
 VerificationResult verify_solution_file(const Model& model, const std::string& sol_filepath, double tol) {
@@ -212,14 +290,30 @@ VerificationResult verify_solution_file(const Model& model, const std::string& s
         return res;
     }
 
+    auto get_col_name = [&](int j) -> std::string {
+        const auto idx = static_cast<size_t>(j);
+        if (idx < model.col_names.size() && !model.col_names[idx].empty()) {
+            return model.col_names[idx];
+        }
+        return "c" + std::to_string(j);
+    };
+
+    auto get_row_name = [&](int i) -> std::string {
+        const auto idx = static_cast<size_t>(i);
+        if (idx < model.row_names.size() && !model.row_names[idx].empty()) {
+            return model.row_names[idx];
+        }
+        return "r" + std::to_string(i);
+    };
+
     std::unordered_map<std::string, int> col_map;
-    for (size_t j = 0; j < model.col_names.size(); ++j) {
-        col_map[model.col_names[j]] = static_cast<int>(j);
+    for (int j = 0; j < model.num_cols; ++j) {
+        col_map[get_col_name(j)] = j;
     }
 
     std::unordered_map<std::string, int> row_map;
-    for (size_t i = 0; i < model.row_names.size(); ++i) {
-        row_map[model.row_names[i]] = static_cast<int>(i);
+    for (int i = 0; i < model.num_rows; ++i) {
+        row_map[get_row_name(i)] = i;
     }
 
     Solution sol;
@@ -227,6 +321,8 @@ VerificationResult verify_solution_file(const Model& model, const std::string& s
     sol.row_value.assign(static_cast<size_t>(model.num_rows), 0.0);
     sol.row_dual.assign(static_cast<size_t>(model.num_rows), 0.0);
     sol.col_dual.assign(static_cast<size_t>(model.num_cols), 0.0);
+    sol.search_completed = false;
+    sol.has_incumbent = false;
 
     std::vector<bool> col_seen(static_cast<size_t>(model.num_cols), false);
     std::vector<bool> row_seen(static_cast<size_t>(model.num_rows), false);
@@ -281,6 +377,64 @@ VerificationResult verify_solution_file(const Model& model, const std::string& s
                         res.violations.push_back(res.summary);
                         return res;
                     }
+                }
+            } else if (line.find("Best Dual Bound:") != std::string::npos) {
+                auto tokens = split_tokens(line);
+                if (tokens.size() >= 4) {
+                    try {
+                        size_t pos = 0;
+                        double val = std::stod(tokens.back(), &pos);
+                        if (pos == tokens.back().size() && !std::isnan(val) && !std::isinf(val)) {
+                            sol.best_dual_bound = val;
+                        }
+                    } catch (...) {}
+                }
+            } else if (line.find("Has Incumbent:") != std::string::npos) {
+                auto tokens = split_tokens(line);
+                if (tokens.size() >= 3) {
+                    sol.has_incumbent = (tokens.back() == "true");
+                }
+            } else if (line.find("Absolute Gap:") != std::string::npos) {
+                auto tokens = split_tokens(line);
+                if (tokens.size() >= 3) {
+                    try {
+                        sol.absolute_gap = std::stod(tokens.back());
+                    } catch (...) {}
+                }
+            } else if (line.find("Relative Gap:") != std::string::npos) {
+                auto tokens = split_tokens(line);
+                if (tokens.size() >= 3) {
+                    try {
+                        sol.relative_gap = std::stod(tokens.back());
+                    } catch (...) {}
+                }
+            } else if (line.find("Search Completed:") != std::string::npos) {
+                auto tokens = split_tokens(line);
+                if (tokens.size() >= 3) {
+                    sol.search_completed = (tokens.back() == "true");
+                }
+            } else if (line.find("Open Nodes:") != std::string::npos) {
+                auto tokens = split_tokens(line);
+                if (tokens.size() >= 3) {
+                    try {
+                        sol.open_nodes = std::stoll(tokens.back());
+                    } catch (...) {}
+                }
+            } else if (line.find("Nodes:") != std::string::npos) {
+                auto tokens = split_tokens(line);
+                if (tokens.size() >= 2) {
+                    try {
+                        sol.nodes = std::stoll(tokens.back());
+                    } catch (...) {}
+                }
+            } else if (line.find("Termination Reason:") != std::string::npos) {
+                const std::string prefix = "# Termination Reason:";
+                size_t p = line.find(prefix);
+                if (p != std::string::npos) {
+                    std::string reason = line.substr(p + prefix.size());
+                    size_t first = reason.find_first_not_of(" \t");
+                    if (first != std::string::npos) reason = reason.substr(first);
+                    sol.termination_reason = reason;
                 }
             }
             continue;
@@ -425,7 +579,7 @@ VerificationResult verify_solution_file(const Model& model, const std::string& s
         if (!col_seen[static_cast<size_t>(j)]) {
             VerificationResult res;
             res.passed = false;
-            res.summary = "Incomplete solution: missing variable " + model.col_names[static_cast<size_t>(j)];
+            res.summary = "Incomplete solution: missing variable " + get_col_name(j);
             res.violations.push_back(res.summary);
             return res;
         }

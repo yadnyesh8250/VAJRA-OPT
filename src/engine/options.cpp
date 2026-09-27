@@ -9,6 +9,9 @@ Options::Options() {
     set("node_limit", node_limit);
     set("mip_relative_gap", mip_relative_gap);
     set("mip_absolute_gap", mip_absolute_gap);
+    set("integer_tolerance", integer_tolerance);
+    set("branching", branching_strategy);
+    set("node_selection", node_selection);
     set("enable_presolve", enable_presolve);
     set("enable_scaling", enable_scaling);
     set("enable_root_cuts", enable_root_cuts);
@@ -19,13 +22,16 @@ Options::Options() {
 void Options::set(const std::string& key, const std::string& value) {
     values_[key] = value;
     if (key == "algorithm") algorithm = value;
+    else if (key == "branching") branching_strategy = value;
+    else if (key == "node_selection") node_selection = value;
 }
 
 void Options::set(const std::string& key, double value) {
     values_[key] = value;
     if (key == "time_limit") time_limit = value;
-    else if (key == "mip_relative_gap") mip_relative_gap = value;
+    else if (key == "mip_relative_gap" || key == "mip_gap") mip_relative_gap = value;
     else if (key == "mip_absolute_gap") mip_absolute_gap = value;
+    else if (key == "integer_tolerance" || key == "integer_tol") integer_tolerance = value;
 }
 
 void Options::set(const std::string& key, int64_t value) {
